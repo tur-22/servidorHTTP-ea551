@@ -6,8 +6,10 @@ if [ $# -lt 1 ]
 	exit
 fi
 
-cd aux 
-flex ../src/especifica.l
-bison -d ../src/especifica.y
-cd ..
-gcc aux/especifica.tab.c aux/lex.yy.c src/process.c src/main/$1.c -o bin/servidor_$1 -lfl
+cd "$(dirname "$BASH_SOURCE[0]")" # leva pwd para raiz do repo
+
+cd src
+flex especifica.l
+bison -d especifica.y
+gcc especifica.tab.c lex.yy.c process.c $1.c -o ../bin/servidor_$1 -lfl
+rm especifica.tab.c lex.yy.c especifica.tab.h

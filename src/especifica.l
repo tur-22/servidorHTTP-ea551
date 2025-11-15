@@ -1,5 +1,5 @@
 %{
-	#include "../aux/especifica.tab.h"
+	#include "especifica.tab.h"
 	#include <stdlib.h>
 %}
 

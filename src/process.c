@@ -14,13 +14,14 @@
 #define OPTIONS 2
 #define TRACE 3
 
+#ifndef MAXSIZE
 #define MAXSIZE 16384
+#endif
 
-/*ARRUMAR CONST*/
-static char * e400 = "<!DOCTYPE html><html><head><title>400 Bad Request</title></head><body><h1>400 Bad Request</h1><p>Aqui est&aacute; o conte&uacute;do de 400.html.</p></body></html>";
-static char * e403 = "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>403 Forbidden</h1><p>Aqui est&aacute; o conte&uacute;do de 403.html.</p></body></html>";
-static char * e404 = "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Aqui est&aacute; o conte&uacute;do de 404.html.</p></body></html>";
-static char * e503 = "<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head><body><h1>503 Service Unavailable</h1><p>O servidor est&aacute; sobrecarregado. Tente novamente.</p></body></html>";
+static const char * e400 = "<!DOCTYPE html><html><head><title>400 Bad Request</title></head><body><h1>400 Bad Request</h1><p>Aqui est&aacute; o conte&uacute;do de 400.html.</p></body></html>";
+static const char * e403 = "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>403 Forbidden</h1><p>Aqui est&aacute; o conte&uacute;do de 403.html.</p></body></html>";
+static const char * e404 = "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Aqui est&aacute; o conte&uacute;do de 404.html.</p></body></html>";
+static const char * e503 = "<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head><body><h1>503 Service Unavailable</h1><p>O servidor est&aacute; sobrecarregado. Tente novamente.</p></body></html>";
 
 static char * concatena(const char *str1, const char *str2);
 static char * simplifica_path(char * path);
@@ -63,6 +64,10 @@ static char * simplifica_path(char * path) {
 
 	char s[MAXSIZE];
 	int i = 0, j = 0, len = strlen(path);
+
+	int termina_em_barra = (path[len-1] == '/') ? 1 : 0; 
+	// se recurso buscado for '/', é necessário adicionar '/' no final da string caso o caminho do webspace também termine em '/'
+
 	while (i < len) {
 		while (path[i] != '/' && i < len) { // lê até próximo '/' e guarda em s
 			s[j] = path[i];
@@ -87,6 +92,10 @@ static char * simplifica_path(char * path) {
 		strcat(s, "/");
 		strcat(s, pilha[i]);
 		free(pilha[i]);
+	}
+
+	if (termina_em_barra) {
+		strcat(s, "/");
 	}
 	
 	ret = strdup(s);
@@ -281,7 +290,8 @@ static int trata_gethead(const char *path, const char *resource, const char *con
 	struct stat statinfo;	
 
 	if (strncmp(path, full_path, strlen(path))) { // verifica se full_path inicia com path do webspace
-		/* TODO: '/' deveria ser incluído no fim de path antes da comparação. Ex: /../meu-webspace2 */
+		/* TODO: '/' deveria ser incluído no fim de path antes da comparação. Ex: [...]/../meu-webspace2 */
+		/* TODO: aceitar caminho de webspace relativo */
 		free(full_path);
 		return 403; // caso não inicie: forbidden
 	}
@@ -409,7 +419,7 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 	char buf[MAXSIZE];
 
 	size_t size;
-	char *msg;
+	const char *msg;
 
 	switch (status) {
 		case 400:

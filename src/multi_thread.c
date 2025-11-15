@@ -6,9 +6,9 @@
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
-#include "../../aux/especifica.tab.h"
-#include "parser.h"
-#include "process.h"
+#include "especifica.tab.h"
+#include "include/parser.h"
+#include "include/process.h"
 
 #include <sys/socket.h>
 
@@ -29,7 +29,7 @@ typedef struct thread_args {
 pthread_mutex_t curr_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t processing_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-long int curr; // numero atual de processos filho (global para ser acessado por callback)
+long int curr; // numero atual de threads
 
 void * worker_thread(void * arg) {
 	thread_args *args = (thread_args *)arg; // faz cast de arg para struct thread_args
