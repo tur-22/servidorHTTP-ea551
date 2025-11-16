@@ -39,7 +39,7 @@ void handle_sigchld() {
 int main(int argc, char *argv[]) {
 
 	if (argc != 4) { // verifica número de argumentos
-		printf("Utilização: %s <N> <Web Space> <path registro>\n", argv[0]);
+		printf("Utilização: %s <N> <path absoluto webspace> <path registro>\n", argv[0]);
 		return 1;
 	}
 

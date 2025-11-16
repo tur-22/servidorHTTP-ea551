@@ -23,7 +23,7 @@
 int main(int argc, char *argv[]) {
 
 	if (argc != 3) { // verifica número de argumentos
-		printf("Utilização: %s <Web Space> registro.txt\n", argv[0]);
+		printf("Utilização: %s <path absoluto webspace> registro.txt\n", argv[0]);
 		return 1;
 	}
 
