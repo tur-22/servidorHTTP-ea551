@@ -65,7 +65,7 @@ static char * simplifica_path(char * path) {
 	char s[MAXSIZE];
 	int i = 0, j = 0, len = strlen(path);
 
-	int termina_em_barra = (path[len-1] == '/') ? 1 : 0; 
+	int termina_em_barra = (path[len-1] == '/') ? 1 : 0;
 	// se recurso buscado for '/', é necessário adicionar '/' no final da string caso o caminho do webspace também termine em '/'
 
 	while (i < len) {
