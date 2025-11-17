@@ -67,7 +67,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	meu_servidor.sin_family = AF_INET;
-	meu_servidor.sin_port = htons(33333); // htons() converte para representação de rede
+	meu_servidor.sin_port = htons(3333); // htons() converte para representação de rede
 	meu_servidor.sin_addr.s_addr = INADDR_ANY; // qualquer endereço válido
 
 	bind(soquete, (struct sockaddr*)&meu_servidor, sizeof(meu_servidor));
@@ -135,7 +135,6 @@ int main(int argc, char *argv[]) {
 			printf("PID %d: Mensagem recebida.\n", pid);
 		} else if(s == 0) { // nenhuma mensagem foi enviada no intervalo definido
 			printf("PID %d: Nada foi enviado em %d ms. Fechando conexão.\n", pid, tolerancia);
-			close(soquete_msg);
 			break;
 		} else {
 			perror("Erro em poll");
@@ -158,7 +157,6 @@ int main(int argc, char *argv[]) {
 
 		if (!campos) { // Gemini: corrige erro de segfault quando yyparse termina sem chamar adiciona_campo() (campos == NULL)
 			fprintf(stderr, "PID %d: Requisição vazia ou malformada recebida. Ignorando.\n", pid);
-			close(soquete_msg); // Fecha a conexão
 			break;          // Volta para o início do while(1) e espera a próxima
 		}
 
@@ -167,9 +165,12 @@ int main(int argc, char *argv[]) {
 
 		char connection_default[] = "close"; // valor padrão
 		char *connection_type;
+		int is_default= 0; // solução barata para ver se pode dar free em connection_type
 
-		if (!busca_connection_type(campos, &connection_type))
-			connection_type = connection_default; 
+		if (!busca_connection_type(campos, &connection_type)) {
+			connection_type = connection_default;
+			is_default = 1;
+		}
 
 		if (write(registrofd, buf, i) == -1) { // escreve requisição em registro.txt
 			perror("Erro em write");
@@ -183,11 +184,17 @@ int main(int argc, char *argv[]) {
 		destroi_campos();
 
 		if (strcmp(connection_type, "close") == 0) {
-			close(soquete_msg);
+			if (!is_default)
+				free(connection_type);
 			printf("PID %d: Conexão do tipo close fechada.\n", pid);
 			break;
 		}	
+
+		if (!is_default)
+			free(connection_type);
 	}
+
+	close(soquete_msg);
 	
 	printf("PID %d: Fim do processo.\n\n", pid);
 	return 0;
