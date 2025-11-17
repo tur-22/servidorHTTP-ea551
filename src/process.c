@@ -262,6 +262,7 @@ static void entrega_recurso_get(char * path, struct stat statinfo, const char *c
 		perror("(entrega_recurso_get) Erro em write");
 		exit(errno);
 	}
+	close(fd);
 }
 
 static void entrega_recurso(char * path, struct stat statinfo, const char *connection_type, int req_code, int saidafd, int registrofd) {
@@ -342,6 +343,7 @@ static int trata_gethead(const char *path, const char *resource, const char *con
 			// REFACTORING: trocar ifs abaixo por função
 
 			if (fstatat(dirfd, "index.html", &file_statinfo, 0) == 0) { // se existe index.html
+				close(dirfd);
 				if (!(file_statinfo.st_mode & S_IRUSR)) { // se index.html não tem permissão de leitura: forbidden
 					free(full_path);
 					return 403;
@@ -355,6 +357,7 @@ static int trata_gethead(const char *path, const char *resource, const char *con
 			}
 			
 			if (fstatat(dirfd, "welcome.html", &file_statinfo, 0) == 0) { // se existe welcome.html
+				close(dirfd);
 				if (!(file_statinfo.st_mode & S_IRUSR)) { // se welcome.html não tem permissão de leitura: forbidden
 					free(full_path);
 					return 403;
@@ -367,6 +370,7 @@ static int trata_gethead(const char *path, const char *resource, const char *con
 				return 0;
 			}
 			
+			close(dirfd);
 			free(full_path);
 			return 404; // não existe index.html nem welcome.html
 	}
