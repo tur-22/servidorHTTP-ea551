@@ -90,45 +90,49 @@ void * worker_thread(void * arg) {
 			pthread_mutex_unlock(&processing_mutex);
 			fprintf(stderr, "Worker thread (socket %d): Requisição vazia ou malformada recebida. Ignorando.\n", soquete_msg);
 			break;
-		} else {
-
-			char *req_type = strdup(campos->nome); // tipo de requisição
-			char *resource = strdup(campos->valores->nome); // caminho para o recurso buscado
-			/*strdup usado para poder destruir campos e liberar mutex logo*/
-
-			char connection_default[] = "close"; // valor padrão
-			char *connection_type;
-			int is_default= 0; // solução barata para ver se pode dar free em connection_type
-
-			if (!busca_connection_type(campos, &connection_type)) {
-				connection_type = connection_default;
-				is_default = 1;
-			}
-
-			imprime_campos(campos);
-			destroi_campos();
-			pthread_mutex_unlock(&processing_mutex);
-
-			if (write(registrofd, buf, i) == -1) { // escreve requisição em registro.txt
-				perror("(worker_thread) Erro em write");
-				exit(errno);
-			}
-			
-			process_request(webspace, buf, req_type, resource, connection_type, soquete_msg, registrofd);
-			
-			free(req_type);
-			free(resource);
-
-			if (strcmp(connection_type, "close") == 0) {
-				if (!is_default)
-					free(connection_type);
-				printf("Worker thread (socket %d): Conexão do tipo close fechada.\n", soquete_msg);
-				break;
-			}
-			
-			if (!is_default)
-				free(connection_type);
 		}
+
+		params p;
+
+		p.req_type = strdup(campos->nome); // tipo de requisição
+		p.resource = strdup(campos->valores->nome); // caminho para o recurso buscado
+		/*strdup usado para poder destruir campos e liberar mutex logo*/
+
+		char connection_default[] = "close"; // valor padrão
+		int is_default = 0; // solução barata para ver se pode dar free em connection_type
+
+		if (!busca_connection_type(campos, &(p.connection_type))) {
+			p.connection_type = connection_default;
+			is_default = 1;
+		}
+
+		if (!busca_auth(campos, &(p.auth)))
+			p.auth = NULL;
+
+		imprime_campos(campos);
+		destroi_campos();
+		pthread_mutex_unlock(&processing_mutex);
+
+		if (write(registrofd, buf, i) == -1) { // escreve requisição em registro.txt
+			perror("(worker_thread) Erro em write");
+			exit(errno);
+		}
+		
+		process_request(webspace, buf, p, soquete_msg, registrofd);
+		
+		free(p.req_type);
+		free(p.resource);
+		if (p.auth)
+			free(p.auth);
+
+		if (strcmp(p.connection_type, "close") == 0) {
+			if (!is_default)
+				free(p.connection_type);
+			printf("Worker thread (socket %d): Conexão do tipo close fechada.\n", soquete_msg);
+			break;
+		}
+		
+		free(p.connection_type);
 	}
 
 	close(soquete_msg);

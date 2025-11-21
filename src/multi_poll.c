@@ -160,16 +160,21 @@ int main(int argc, char *argv[]) {
 			break;          // Volta para o início do while(1) e espera a próxima
 		}
 
-		char *req_type = campos->nome; // tipo de requisição
-		char *resource = campos->valores->nome; // caminho para o recurso buscado
+		params p;
+
+		p.req_type = campos->nome; // tipo de requisição
+		p.resource = campos->valores->nome; // caminho para o recurso buscado
 
 		char connection_default[] = "close"; // valor padrão
-		char *connection_type;
-		int is_default= 0; // solução barata para ver se pode dar free em connection_type
+		int is_default = 0; // solução barata para ver se pode dar free em connection_type
 
-		if (!busca_connection_type(campos, &connection_type)) {
-			connection_type = connection_default;
+		if (!busca_connection_type(campos, &(p.connection_type))) {
+			p.connection_type = connection_default;
 			is_default = 1;
+		}
+
+		if (!busca_auth(campos, &(p.auth))) {
+			p.auth = NULL;
 		}
 
 		if (write(registrofd, buf, i) == -1) { // escreve requisição em registro.txt
@@ -177,21 +182,23 @@ int main(int argc, char *argv[]) {
 			exit(errno);
 		}
 		
-		process_request(argv[2], buf, req_type, resource, connection_type, soquete_msg, registrofd);
+		process_request(argv[2], buf, p, soquete_msg, registrofd);
 
 		imprime_campos(campos);
 
 		destroi_campos();
 
-		if (strcmp(connection_type, "close") == 0) {
+		if (p.auth)
+			free(p.auth);
+
+		if (strcmp(p.connection_type, "close") == 0) {
 			if (!is_default)
-				free(connection_type);
+				free(p.connection_type);
 			printf("PID %d: Conexão do tipo close fechada.\n", pid);
 			break;
 		}	
 
-		if (!is_default)
-			free(connection_type);
+		free(p.connection_type);
 	}
 
 	close(soquete_msg);

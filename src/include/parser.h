@@ -24,3 +24,4 @@ extern int yylineno;
 void destroi_campos();
 void imprime_campos(p_cnode campos);
 int busca_connection_type(p_cnode c, char **connection_type);
+int busca_auth(p_cnode c, char **auth);

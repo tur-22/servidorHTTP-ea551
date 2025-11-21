@@ -33,6 +33,7 @@
 	void destroi_campos();
 	void imprime_campos(p_cnode campos);
 	int busca_connection_type(p_cnode c, char **connection_type);
+	int busca_auth(p_cnode c, char **auth);
 %}
 
 %union {
@@ -190,6 +191,19 @@ int busca_connection_type(p_cnode c, char **connection_type) {
 	while (c) {
 		if (strcmp(c->nome, "Connection") == 0) {
 			*connection_type = strdup(c->valores->nome); // copia primeiro valor do campo com nome Connection para parâmetro
+			return 1;
+		}
+		c = c->prox;
+	}
+	return 0;
+}
+
+int busca_auth(p_cnode c, char **auth) {
+	/* Copia valor do campo Authorization para auth, se houver. Retorna 1 em caso de sucesso, 0 caso contrário. */
+
+	while (c) {
+		if (strcmp(c->nome, "Authorization") == 0) {
+			*auth = strdup(c->valores->nome); // copia primeiro valor do campo com nome Authorization para parâmetro (e.g. BasicZWNvbXA6bW9kX0FC)
 			return 1;
 		}
 		c = c->prox;

@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
+#include <libgen.h>
 
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -23,6 +24,13 @@ static const char * e403 = "<!DOCTYPE html><html><head><title>403 Forbidden</tit
 static const char * e404 = "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Aqui est&aacute; o conte&uacute;do de 404.html.</p></body></html>";
 static const char * e503 = "<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head><body><h1>503 Service Unavailable</h1><p>O servidor est&aacute; sobrecarregado. Tente novamente.</p></body></html>";
 
+typedef struct params {
+    char *req_type;
+    char *resource;
+    char *connection_type;
+    char *auth;
+} params;
+
 static char * concatena(const char *str1, const char *str2);
 static char * simplifica_path(char * path);
 static void get_date(char *buf, int bufsize);
@@ -32,12 +40,12 @@ static int build_head_ok(char *buf, struct stat statinfo, const char *connection
 static void entrega_recurso_head(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso_get(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso(char * path, struct stat statinfo, const char *connection_type, int req_code, int saidafd, int registrofd);
-static int trata_gethead(const char *path, const char *resource, const char *connection_type, int req_code, int saidafd, int registrofd);
+static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, int req_code, int saidafd, int registrofd);
 static void trata_options(const char *connection_type, int saidafd, int registrofd);
 static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
 
 void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd);
-int process_request(const char *webspace, const char *request,  const char *req_type, const char *resource, const char *connection_type, int saidafd, int registrofd);
+int process_request(const char *webspace, const char *request, const params p, int saidafd, int registrofd);
 
 static char * concatena(const char *str1, const char *str2) { // const: prometo não alterar conteúdo de strings
 	/* Concatena duas strings em um novo ponteiro para char */
@@ -282,20 +290,63 @@ static void entrega_recurso(char * path, struct stat statinfo, const char *conne
 
 }
 
-static int trata_gethead(const char *path, const char *resource, const char *connection_type, int req_code, int saidafd, int registrofd) {
+static void sobe_busca(char *search_path) {
+	/*modifica search_path para conter path de .htaccess no diretório acima*/
+	dirname(search_path);
+	dirname(search_path);
+	strcat(search_path, "/.htaccess");
+}
+
+static void verifica_htaccess(const char *webspace, char *full_path) {
+	int len = strlen(full_path), len_webspace = strlen(webspace);
+	int termina_em_barra = (full_path[len-1] == '/') ? 1 : 0;
+	char *search_path;
+
+	// começa supondo que full_path representa diretório e buscando .htaccess dentro dele (para index.html)
+	switch (termina_em_barra) {
+		case 0:
+			search_path = concatena(full_path, "/.htaccess");
+		case 1:
+			search_path = concatena(full_path, ".htaccess");
+	}
+
+	int sucesso = 0;
+	do {
+		if (access(search_path, F_OK) == 0) {
+			sucesso = 1; // existe htaccess em search_path
+			break;
+		}
+		sobe_busca(search_path);
+	} while(strncmp(webspace, search_path, len_webspace));
+
+	int fd;
+	if (sucesso) {
+		if ((fd = open(full_path, O_RDONLY)) == -1) { // abre .htaccess
+			free(full_path);
+			perror("(verifica_htaccess) Erro em open");
+			exit(errno);
+		}
+
+
+	}
+}
+
+static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, int req_code, int saidafd, int registrofd) {
 	/*responde requisição get ou head, ou retorna status code de erro*/
 	// req_code == 0: GET; req_code == 1: HEAD
 
-	char *full_path = concatena(path, resource);
+	char *full_path = concatena(webspace, resource);
 	full_path = simplifica_path(full_path); // simplifica path antes de verificar se inicia com path do webspace
 	struct stat statinfo;	
 
-	if (strncmp(path, full_path, strlen(path))) { // verifica se full_path inicia com path do webspace
+	if (strncmp(webspace, full_path, strlen(webspace))) { // verifica se full_path inicia com path do webspace
 		/* TODO: '/' deveria ser incluído no fim de path antes da comparação. Ex: [...]/../meu-webspace2 */
 		/* TODO: aceitar caminho de webspace relativo */
 		free(full_path);
 		return 403; // caso não inicie: forbidden
 	}
+
+	//verifica_htaccess(webspace, full_path);
 
 	if (stat(full_path, &statinfo) == -1) { // chama stat e verifica se houve erro
 		switch (errno) { // stat modifica errno com base em erro
@@ -318,7 +369,6 @@ static int trata_gethead(const char *path, const char *resource, const char *con
 	}
 
 	switch(statinfo.st_mode & S_IFMT) { // testa tipo de arquivo
-		 // buf está definido em todo o escopo do switch
 		
 		case S_IFREG: // arquivo regular
 			entrega_recurso(full_path, statinfo, connection_type, req_code, saidafd, registrofd);
@@ -465,33 +515,33 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 	
 }
 
-int process_request(const char *webspace, const char *request,  const char *req_type, const char *resource, const char *connection_type, int saidafd, int registrofd) {
+int process_request(const char *webspace, const char *request, const params p, int saidafd, int registrofd) {
 	/* Chama função respectiva para tratar requisição */
 
 	int result = 0; // guarda status code retornado por trata_gethead()
 	int req_code = -1; // identifica tipo de requisição (começa inválido). Utilizado para não trabalhar com strings dentro de trata_gethead e erro
 
-	if (strcmp(req_type, "GET") == 0) {
+	if (strcmp(p.req_type, "GET") == 0) {
 		req_code = GET;
-		result = trata_gethead(webspace, resource, connection_type, req_code, saidafd, registrofd);
+		result = trata_gethead(webspace, p.resource, p.connection_type, req_code, saidafd, registrofd);
 	}
-	else if (strcmp(req_type, "HEAD") == 0) {
+	else if (strcmp(p.req_type, "HEAD") == 0) {
 		req_code = HEAD;
-		result = trata_gethead(webspace, resource, connection_type, req_code, saidafd, registrofd);
+		result = trata_gethead(webspace, p.resource, p.connection_type, req_code, saidafd, registrofd);
 	}
-	else if (strcmp(req_type, "OPTIONS") == 0) {
+	else if (strcmp(p.req_type, "OPTIONS") == 0) {
 		req_code = OPTIONS;
-		trata_options(connection_type, saidafd, registrofd);
+		trata_options(p.connection_type, saidafd, registrofd);
 	}
-	else if (strcmp(req_type, "TRACE") == 0) {
+	else if (strcmp(p.req_type, "TRACE") == 0) {
 		req_code = TRACE;
-		trata_trace(request, connection_type, saidafd, registrofd);
+		trata_trace(request, p.connection_type, saidafd, registrofd);
 	} else {
-		trata_erro(400, connection_type, req_code, saidafd, registrofd); // servidor apenas reconhece 4 tipos acima. Devolve 400 caso requisição seja diferente
+		trata_erro(400, p.connection_type, req_code, saidafd, registrofd); // servidor apenas reconhece 4 tipos acima. Devolve 400 caso requisição seja diferente
 	}
 
 	if (result != 0) { // imprime mensagem de erro caso houve algum em requisição GET ou HEAD (apenas cabeçalho)
-		trata_erro(result, connection_type, req_code, saidafd, registrofd);
+		trata_erro(result, p.connection_type, req_code, saidafd, registrofd);
 	}
 
 	return result;
