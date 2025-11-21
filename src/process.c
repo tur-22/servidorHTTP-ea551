@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
+#include "include/process.h"
+
 #define GET 0
 #define HEAD 1
 #define OPTIONS 2
@@ -24,13 +26,6 @@ static const char * e403 = "<!DOCTYPE html><html><head><title>403 Forbidden</tit
 static const char * e404 = "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Aqui est&aacute; o conte&uacute;do de 404.html.</p></body></html>";
 static const char * e503 = "<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head><body><h1>503 Service Unavailable</h1><p>O servidor est&aacute; sobrecarregado. Tente novamente.</p></body></html>";
 
-typedef struct params {
-    char *req_type;
-    char *resource;
-    char *connection_type;
-    char *auth;
-} params;
-
 static char * concatena(const char *str1, const char *str2);
 static char * simplifica_path(char * path);
 static void get_date(char *buf, int bufsize);
@@ -40,12 +35,9 @@ static int build_head_ok(char *buf, struct stat statinfo, const char *connection
 static void entrega_recurso_head(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso_get(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso(char * path, struct stat statinfo, const char *connection_type, int req_code, int saidafd, int registrofd);
-static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, int req_code, int saidafd, int registrofd);
+static int trata_gethead(const char *webspace, params p, int req_code, int saidafd, int registrofd);
 static void trata_options(const char *connection_type, int saidafd, int registrofd);
 static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
-
-void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd);
-int process_request(const char *webspace, const char *request, const params p, int saidafd, int registrofd);
 
 static char * concatena(const char *str1, const char *str2) { // const: prometo não alterar conteúdo de strings
 	/* Concatena duas strings em um novo ponteiro para char */
@@ -236,7 +228,6 @@ static void entrega_recurso_head(char * path, struct stat statinfo, const char *
 	int i = build_head_ok(buf, statinfo, connection_type);
 
 	if (write(saidafd, buf, i) == -1) {
-		free(path);
 		perror("(entrega_recurso_head) Erro em write");
 		exit(errno);
 	}
@@ -256,17 +247,14 @@ static void entrega_recurso_get(char * path, struct stat statinfo, const char *c
 	registra_head(buf, registrofd); // registra saída em registro.txt antes de ler recurso
 
 	if ((fd = open(path, O_RDONLY)) == -1) {
-		free(path);
 		perror("(entrega_recurso_get) Erro em open (entrega_recurso_get)");
 		exit(errno);
 	}
 	if ((i = read(fd, buf + off, sizeof(buf) - off)) == -1) {
-		free(path);
 		perror("(entrega_recurso_get) Erro em read");
 		exit(errno);
 	}
 	if (write(saidafd, buf, i + off) == -1) {
-		free(path);
 		perror("(entrega_recurso_get) Erro em write");
 		exit(errno);
 	}
@@ -297,8 +285,24 @@ static void sobe_busca(char *search_path) {
 	strcat(search_path, "/.htaccess");
 }
 
-static void verifica_htaccess(const char *webspace, char *full_path) {
-	int len = strlen(full_path), len_webspace = strlen(webspace);
+static int busca_htaccess(const char *webspace, char *search_path) {
+	/*sobe árvore de diretórios até encontrar (ou não) um .htaccess existente*/
+	int len_webspace = strlen(webspace);
+	int sucesso = 0;
+
+	do {
+		if (access(search_path, F_OK) == 0) {
+			sucesso = 1; // existe htaccess em search_path
+			break;
+		}
+		sobe_busca(search_path);
+	} while(strncmp(webspace, search_path, len_webspace));
+
+	return sucesso;
+}
+
+static int autentica(const char *webspace, char *full_path, char *auth) {
+	int len = strlen(full_path);
 	int termina_em_barra = (full_path[len-1] == '/') ? 1 : 0;
 	char *search_path;
 
@@ -310,32 +314,48 @@ static void verifica_htaccess(const char *webspace, char *full_path) {
 			search_path = concatena(full_path, ".htaccess");
 	}
 
-	int sucesso = 0;
-	do {
-		if (access(search_path, F_OK) == 0) {
-			sucesso = 1; // existe htaccess em search_path
-			break;
-		}
-		sobe_busca(search_path);
-	} while(strncmp(webspace, search_path, len_webspace));
+	int htaccess = busca_htaccess(webspace, search_path);
 
-	int fd;
-	if (sucesso) {
-		if ((fd = open(full_path, O_RDONLY)) == -1) { // abre .htaccess
-			free(full_path);
-			perror("(verifica_htaccess) Erro em open");
+	if (htaccess) {
+		int fd;
+		if ((fd = open(search_path, O_RDONLY)) == -1) { // abre .htaccess
+			perror("(autentica) Erro em open");
 			exit(errno);
 		}
 
+		// path arquivo de senhas
 
+		close(fd);
+
+		// abre arquivo de senhas
+
+		if (strncmp(auth, "Basic", 5)) {
+			fprintf(stderr, "(autentica) Tipo de autenticação não suportado");
+			close(fd);
+			free(search_path);
+			return 0;
+		}
+
+		char *credenciais = strndup(auth+5, strlen(auth+5));
+
+		//decodifica
+		//busca usuario
+		//crypt
+		//verifica senha
+
+		free(search_path);
+		return 1;
 	}
+
+	free(search_path);
+	return 1;
 }
 
-static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, int req_code, int saidafd, int registrofd) {
+static int trata_gethead(const char *webspace, const params p, int req_code, int saidafd, int registrofd) {
 	/*responde requisição get ou head, ou retorna status code de erro*/
 	// req_code == 0: GET; req_code == 1: HEAD
 
-	char *full_path = concatena(webspace, resource);
+	char *full_path = concatena(webspace, p.resource);
 	full_path = simplifica_path(full_path); // simplifica path antes de verificar se inicia com path do webspace
 	struct stat statinfo;	
 
@@ -345,8 +365,11 @@ static int trata_gethead(const char *webspace, const char *resource, const char 
 		free(full_path);
 		return 403; // caso não inicie: forbidden
 	}
-
-	//verifica_htaccess(webspace, full_path);
+	/*
+	if (!autentica(webspace, full_path, p.auth)) {
+		free(full_path);
+		return 401;
+	}*/
 
 	if (stat(full_path, &statinfo) == -1) { // chama stat e verifica se houve erro
 		switch (errno) { // stat modifica errno com base em erro
@@ -357,7 +380,6 @@ static int trata_gethead(const char *webspace, const char *resource, const char 
 				free(full_path);
 				return 403;
 			default:
-				free(full_path);
 				perror("(trata_gethead) Erro em <stat>");
 				exit(errno);
 		}
@@ -371,7 +393,7 @@ static int trata_gethead(const char *webspace, const char *resource, const char 
 	switch(statinfo.st_mode & S_IFMT) { // testa tipo de arquivo
 		
 		case S_IFREG: // arquivo regular
-			entrega_recurso(full_path, statinfo, connection_type, req_code, saidafd, registrofd);
+			entrega_recurso(full_path, statinfo, p.connection_type, req_code, saidafd, registrofd);
 			free(full_path);
 			return 0;
 
@@ -385,7 +407,6 @@ static int trata_gethead(const char *webspace, const char *resource, const char 
 			}
 
 			if ((dirfd = open(full_path, O_RDONLY)) == -1) { // abre diretório
-				free(full_path);
 				perror("(trata_gethead) Erro em open");
 				exit(errno);
 			}
@@ -401,7 +422,7 @@ static int trata_gethead(const char *webspace, const char *resource, const char 
 				// caso contrário: open, read, write
 				char *fuller_path = concatena(full_path, "/index.html"); // concatena /index.html ao final da string
 				free(full_path);
-				entrega_recurso(fuller_path, file_statinfo, connection_type, req_code, saidafd, registrofd);
+				entrega_recurso(fuller_path, file_statinfo, p.connection_type, req_code, saidafd, registrofd);
 				free(fuller_path);
 				return 0;
 			}
@@ -415,7 +436,7 @@ static int trata_gethead(const char *webspace, const char *resource, const char 
 				// caso contrário: open, read, write
 				char *fuller_path = concatena(full_path, "/welcome.html");
 				free(full_path);
-				entrega_recurso(fuller_path, file_statinfo, connection_type, req_code, saidafd, registrofd);
+				entrega_recurso(fuller_path, file_statinfo, p.connection_type, req_code, saidafd, registrofd);
 				free(fuller_path);
 				return 0;
 			}
@@ -523,11 +544,11 @@ int process_request(const char *webspace, const char *request, const params p, i
 
 	if (strcmp(p.req_type, "GET") == 0) {
 		req_code = GET;
-		result = trata_gethead(webspace, p.resource, p.connection_type, req_code, saidafd, registrofd);
+		result = trata_gethead(webspace, p, req_code, saidafd, registrofd);
 	}
 	else if (strcmp(p.req_type, "HEAD") == 0) {
 		req_code = HEAD;
-		result = trata_gethead(webspace, p.resource, p.connection_type, req_code, saidafd, registrofd);
+		result = trata_gethead(webspace, p, req_code, saidafd, registrofd);
 	}
 	else if (strcmp(p.req_type, "OPTIONS") == 0) {
 		req_code = OPTIONS;

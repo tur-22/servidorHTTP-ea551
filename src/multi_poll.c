@@ -6,9 +6,6 @@
 #include <errno.h>
 #include <signal.h>
 #include <poll.h>
-#include "especifica.tab.h"
-#include "include/parser.h"
-#include "include/process.h"
 
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -16,6 +13,10 @@
 #include <netinet/in.h>
 
 #include <arpa/inet.h>
+
+#include "especifica.tab.h"
+#include "include/parser.h"
+#include "include/process.h"
 
 #ifndef MAXSIZE
 #define MAXSIZE 16384

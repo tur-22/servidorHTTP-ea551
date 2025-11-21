@@ -4,9 +4,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
-#include "especifica.tab.h"
-#include "include/parser.h"
-#include "include/process.h"
 
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -15,6 +12,10 @@
 #include <netinet/in.h>
 
 #include <arpa/inet.h>
+
+#include "especifica.tab.h"
+#include "include/parser.h"
+#include "include/process.h"
 
 #ifndef MAXSIZE
 #define MAXSIZE 16384
