@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <time.h>
 #include <libgen.h>
+#include <crypt.h>
 
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -321,7 +322,7 @@ static void sobe_busca(char *search_path) {
 }
 
 static int busca_htaccess(const char *webspace, char *search_path) {
-	/*sobe árvore de diretórios até encontrar (ou não) um .htaccess existente*/
+	/*sobe árvore de diretórios até encontrar (ou não) um .htaccess existente (modifica search_path)*/
 	int len_webspace = strlen(webspace);
 	int sucesso = 0;
 
@@ -334,6 +335,68 @@ static int busca_htaccess(const char *webspace, char *search_path) {
 	} while(!strncmp(webspace, search_path, len_webspace));
 
 	return sucesso;
+}
+
+static int busca_credenciais(const char *usuario, const char *hash, const char *htpath) {
+	int fd;
+	if ((fd = open(htpath, O_RDONLY)) == -1) { // abre .htpassword
+		perror("(autentica) Erro em open");
+		exit(errno);
+	}
+
+	close(fd);
+}
+
+static int verifica_credenciais(const char *credenciais, const char *htpath) {
+	/*Busca informações de login em arquivo de senhas com path htpath*/
+
+	char *credenciais_cpy = strdup(credenciais);
+	char *usuario = strtok(credenciais, ":");
+	char *senha = strtok(NULL, ":");
+
+	//Obtém hash de senha
+	struct crypt_data data;
+    data.initialized = 0;
+
+	/*IA - Geração de salt*/
+
+	/* 1. Preparar o Seed baseado no horário atual */
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    
+    // Mistura segundos e microssegundos para o seed ser mais "único" por thread
+    unsigned int seed = (unsigned int)(tv.tv_sec ^ tv.tv_usec);
+
+    /* 2. Gerar o SALT Pseudo-Aleatório
+       Formato do Salt SHA-512: $6$saltstring$
+       O 'saltstring' deve ter até 16 caracteres do conjunto [a-zA-Z0-9./]
+    */
+    const char *charset = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    char salt[21]; // $6$ + 16 chars + $ + \0
+    
+    strcpy(salt, "$6$"); // Prefixo para SHA-512
+    int offset = 3;
+    
+    for (int i = 0; i < 16; i++) {
+        // rand_r é thread-safe, diferente de rand()
+        int index = rand_r(&seed) % 64; 
+        salt[offset + i] = charset[index];
+    }
+    salt[offset + 16] = '$'; // Terminador do salt (opcional, mas boa prática)
+    salt[offset + 17] = '\0';
+
+	/*ENDIA*/
+
+	char *hash = crypt_r(senha, salt, &data); // thread_safe
+
+	if (!hash || hash[0] == '*') { 
+		perror("Erro em crypt");
+		exit(errno);
+	}
+
+	int autenticado = busca_credenciais(usuario, hash, htpath);
+	free(credenciais_cpy);
+	return autenticado;
 }
 
 static int autentica(const char *webspace, char *full_path, char *auth, char *realm) {
@@ -354,23 +417,26 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 	int htaccess = busca_htaccess(webspace, search_path);
 
 	if (htaccess) {
-		int fd;
-		if ((fd = open(search_path, O_RDONLY)) == -1) { // abre .htaccess
-			perror("(autentica) Erro em open");
+		FILE *fp;
+		if (!(fp = fopen(search_path, "r"))) { // abre .htaccess
+			perror("(autentica) Erro em fopen");
 			exit(errno);
 		}
 
-		// path arquivo de senhas
-		realm = NULL;
-		close(fd);
+		// supondo que htpath possui formato [path .htpassword] + \n + [realm]
+		char htpath[MAXSIZE];
+		fgets(htpath, sizeof(htpath), fp);
+		fgets(realm, sizeof(realm), fp);
+		fclose(fp);
 
-		// abre arquivo de senhas
+		len = strlen(htpath);
+		if (len)
+			htpath[len-1] = '\0'; // remove \n do final do path
 
 		if (auth == NULL || strncmp(auth, "Basic", 5)) {
-			fprintf(stderr, "(autentica) Campo de autenticação não reconhecido.\n");
-			close(fd);
+			fprintf(stderr, "(autentica) Campo de autorização não reconhecido.\n");
 			free(search_path);
-			return 0;
+			return 0; // não autenticado
 		}
 
 		char *credenciaisb64 = strndup(auth+5, strlen(auth+5));
@@ -379,17 +445,17 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 		free(credenciaisb64);
 
 		printf("Credenciais: %s\n", credenciais);
-		//busca usuario
-		//crypt
-		//verifica senha
+
+		if (!verifica_credenciais(credenciais, htpath)) {
+			free(credenciais);
+			return 0; // não autenticado
+		}
 
 		free(credenciais);
-		free(search_path);
-		return 1; //mudar
 	}
 
 	free(search_path);
-	return 1;
+	return 1; // autenticado
 }
 
 static int trata_gethead(const char *webspace, const params p, int req_code, int saidafd, int registrofd, char *realm) {
@@ -494,16 +560,9 @@ static void trata_options(const char *connection_type, int saidafd, int registro
 	char buf[MAXSIZE];
 	char datebuf[64]; // guarda data atual formatada (sem \r\n)
 
-	get_date(datebuf, sizeof(datebuf));
+	build_head(buf, OPTIONS, 204, NULL, 0, connection_type, NULL);
 
-	int i = sprintf( // preenche buf com cabeçalho
-		buf,
-		"HTTP/1.1 204 No Content\r\nAllow: OPTIONS, GET, HEAD, TRACE\r\nConnection: %s\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\n\r\n",
-		connection_type,
-		datebuf
-	);
-
-	if (write(saidafd, buf, i) == -1) {
+	if (write(saidafd, buf, strlen(buf)) == -1) {
 		perror("(trata_options) Erro em write");
 		exit(errno);
 	}
@@ -562,7 +621,7 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 			exit(3);
 	}
 
-	int off = build_head(buf, req_code, status, NULL, size, connection_type, NULL);
+	int off = build_head(buf, req_code, status, NULL, size, connection_type, realm);
 
 	registra_head(buf, registrofd); // registra saída em registro.txt antes de ler html de erro
 
@@ -585,7 +644,7 @@ int process_request(const char *webspace, const char *request, const params p, i
 
 	int result = 0; // guarda status code retornado por trata_gethead()
 	int req_code = -1; // identifica tipo de requisição (começa inválido). Utilizado para não trabalhar com strings dentro de trata_gethead e erro
-	char *realm = NULL;
+	char realm[256];
 
 	if (strcmp(p.req_type, "GET") == 0) {
 		req_code = GET;
@@ -609,9 +668,6 @@ int process_request(const char *webspace, const char *request, const params p, i
 	if (result != 0) { // imprime mensagem de erro caso houve algum em requisição GET ou HEAD (apenas cabeçalho)
 		trata_erro(result, p.connection_type, req_code, saidafd, registrofd, realm);
 	}
-
-	if (realm)
-		free(realm);
 
 	return result;
 }

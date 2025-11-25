@@ -69,7 +69,7 @@ int main(int argc, char *argv[]) {
 
 		while(1) { // trabalha em conexão até ela ser fechada
 
-			char buf[10000]; // guarda mensagem de requisição
+			char buf[MAXSIZE]; // guarda mensagem de requisição
 			int i;
 
 			FD_ZERO(&fds); // limpa fd_set

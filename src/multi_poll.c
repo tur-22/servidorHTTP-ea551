@@ -118,7 +118,7 @@ int main(int argc, char *argv[]) {
 	while (1) { // se processo filho, read-process-write até conexão ser fechada
 		pid = getpid();
 
-		char buf[10000]; // guarda mensagem de requisição
+		char buf[MAXSIZE]; // guarda mensagem de requisição
 		int i;
 
 		pfd.revents = 0; // zera flags de eventos disponíveis retornados por poll
