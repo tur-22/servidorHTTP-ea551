@@ -224,7 +224,7 @@ int main(int argc, char *argv[]) {
 			pthread_mutex_unlock(&curr_mutex);
 			printf("Thread principal: Servidor sobrecarregado!\n");
 
-			trata_erro(503, "close", -1, soquete_msg, registrofd); // na prática, envia resposta como se fosse a uma requisição get
+			trata_erro(503, "close", -1, soquete_msg, registrofd, NULL); // na prática, envia resposta como se fosse a uma requisição get
 
 			close(soquete_msg);
 		}

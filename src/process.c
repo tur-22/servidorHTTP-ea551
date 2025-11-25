@@ -10,6 +10,10 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/buffer.h>
+
 #include "include/process.h"
 
 #define GET 0
@@ -22,22 +26,47 @@
 #endif
 
 static const char * e400 = "<!DOCTYPE html><html><head><title>400 Bad Request</title></head><body><h1>400 Bad Request</h1><p>Aqui est&aacute; o conte&uacute;do de 400.html.</p></body></html>";
+static const char * e401 = "<!DOCTYPE html><html><head><title>401 Unauthorized</title></head><body><h1>401 Unauthorized</h1><p>Aqui est&aacute; o conte&uacute;do de 401.html.</p></body></html>";
 static const char * e403 = "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>403 Forbidden</h1><p>Aqui est&aacute; o conte&uacute;do de 403.html.</p></body></html>";
 static const char * e404 = "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Aqui est&aacute; o conte&uacute;do de 404.html.</p></body></html>";
 static const char * e503 = "<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head><body><h1>503 Service Unavailable</h1><p>O servidor est&aacute; sobrecarregado. Tente novamente.</p></body></html>";
 
+static unsigned char *base64_decode(const char *input, int length, int *out_len);
 static char * concatena(const char *str1, const char *str2);
 static char * simplifica_path(char * path);
 static void get_date(char *buf, int bufsize);
 static void registra_head(char *buf, int registrofd);
-static int build_head_err_trace(char *buf, int status, size_t content_length, const char *connection_type);
-static int build_head_ok(char *buf, struct stat statinfo, const char *connection_type);
+static int build_head(char *buf, int req_code, int status, const struct stat *statinfo, size_t content_length, const char *connection_type, const char *realm);
 static void entrega_recurso_head(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso_get(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso(char * path, struct stat statinfo, const char *connection_type, int req_code, int saidafd, int registrofd);
-static int trata_gethead(const char *webspace, params p, int req_code, int saidafd, int registrofd);
+static int trata_gethead(const char *webspace, params p, int req_code, int saidafd, int registrofd, char *realm);
 static void trata_options(const char *connection_type, int saidafd, int registrofd);
 static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
+static int busca_htaccess(const char *webspace, char *search_path);
+static void sobe_busca(char *search_path);
+static int autentica(const char *webspace, char *full_path, char *auth, char *realm);
+
+/*Feito com IA*/
+static unsigned char *base64_decode(const char *input, int length, int *out_len) {
+    BIO *b64, *bmem;
+
+    unsigned char *buffer = (unsigned char *)malloc(length);
+    memset(buffer, 0, length);
+
+    b64 = BIO_new(BIO_f_base64());
+    bmem = BIO_new_mem_buf(input, length);
+    bmem = BIO_push(b64, bmem);
+
+    // Do not look for newlines (optional, depends on input format)
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL); 
+
+    *out_len = BIO_read(b64, buffer, length);
+
+    BIO_free_all(b64);
+
+    return buffer;
+}
 
 static char * concatena(const char *str1, const char *str2) { // const: prometo não alterar conteúdo de strings
 	/* Concatena duas strings em um novo ponteiro para char */
@@ -141,91 +170,97 @@ static void registra_head(char *buf, int registrofd) {
 	}
 }
 
-// DRY: trocar por apenas uma função.
+static int build_head(char *buf, int req_code, int status, const struct stat *statinfo, size_t content_length, const char *connection_type, const char *realm) {
 
-static int build_head_err_trace(char *buf, int status, size_t content_length, const char *connection_type) {
-	/* Cabeçalho sem Last-Modified.
-	Utilizado para respostas de erro ou trace.*/
-	
 	char datebuf[64]; // guarda data atual formatada (sem \r\n)
 	char statusmsg[32]; // guarda mensagem referente ao status code, a ser exibida na primeira linha da resposta
 	char content_type[32];
 	int off; // número de caracteres escritos em buf para armazenar header
 
 	get_date(datebuf, sizeof(datebuf));
-	
-	switch (status) {
-		case 200: // requisição trace
-			sprintf(statusmsg, "200 OK");
-			sprintf(content_type, "message/http");
-			break;
-		case 400: // por enquanto apenas se req não reconhecida
-			sprintf(statusmsg, "400 Bad Request");
-			sprintf(content_type, "text/html");
-			break;
-		case 403:
-			sprintf(statusmsg, "403 Forbidden");
-			sprintf(content_type, "text/html");
-			break;
-		case 404:
-			sprintf(statusmsg, "404 Not Found");
-			sprintf(content_type, "text/html");
-			break;
-		case 503:
-			sprintf(statusmsg, "503 Service Unavailable");
-			sprintf(content_type, "text/html");
-			break;
-		default:
-			sprintf(statusmsg, "000"); // caso não tratado
-	}
 
-	off = sprintf(
-		buf,
-		"HTTP/1.1 %s\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nContent-Length: %ld\r\nContent-Type: %s\r\n\r\n",
-		statusmsg,
-		datebuf,
-		connection_type,
-		content_length,
-		content_type
-	);
+	if (req_code == OPTIONS) {
 
-	return off;
+		off = sprintf(
+			buf,
+			"HTTP/1.1 204 No Content\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nAllow: OPTIONS, GET, HEAD, TRACE\r\n\r\n",
+			datebuf,
+			connection_type
+		);
 
-	/*operações de formatação de data feitas com ajuda do chatGPT*/
-}
+	} else if (status == 200 && req_code == GET || req_code == HEAD) {
 
-static int build_head_ok(char *buf, struct stat statinfo, const char *connection_type) {
-	/*Escreve cabeçalho de resposta a GET ou HEAD bem sucedidos em buf*/
+		char modtbuf[64]; // guarda data de última modificação formatada (sem \r\n)
 
-	char datebuf[64]; // guarda data atual formatada (sem \r\n)
-	char modtbuf[64]; // guarda data de última modificação formatada (sem \r\n)
-	int off; // número de caracteres escritos em buf para armazenar header
+		strftime(modtbuf, sizeof(modtbuf), "%c BRT", localtime(&(statinfo->st_mtim.tv_sec))); // localtime retorna struct com tempo de última modificação formatado
+		off = sprintf(
+			buf,
+			"HTTP/1.1 200 OK\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nContent-Length: %ld\r\nContent-Type: text/html\r\nLast-Modified: %s\r\n\r\n",
+			datebuf,
+			connection_type,
+			statinfo->st_size,
+			modtbuf
+		);
+		
+	} else if (status == 401) {
 
-	get_date(datebuf, sizeof(datebuf));
+		off = sprintf(
+			buf,
+			"HTTP/1.1 401 Unauthorized\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nWWW-Authenticate: Basic realm=\"%s\"\r\nContent-Length: %ld\r\nContent-Type: text/html\r\n\r\n",
+			datebuf,
+			connection_type,
+			realm,
+			content_length
+		);
 
-	strftime(modtbuf, sizeof(modtbuf), "%c BRT", localtime(&statinfo.st_mtim.tv_sec)); // localtime retorna struct com tempo de última modificação formatado
+	} else { // demais erros ou trace
 
-	off = sprintf(
-		buf,
-		"HTTP/1.1 200 OK\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nLast-Modified: %s\r\nContent-Length: %ld\r\nContent-Type: text/html\r\n\r\n",
-		datebuf,
-		connection_type,
-		modtbuf,
-		statinfo.st_size
-	);
+		switch(status) {
+			case 200: // TRACE
+				sprintf(statusmsg, "200 OK");
+				sprintf(content_type, "message/http");
+				break;
+			case 400:
+				sprintf(statusmsg, "400 Bad Request");
+				sprintf(content_type, "text/html");
+				break;
+			case 403:
+				sprintf(statusmsg, "403 Forbidden");
+				sprintf(content_type, "text/html");
+				break;
+			case 404:
+				sprintf(statusmsg, "404 Not Found");
+				sprintf(content_type, "text/html");
+				break;
+			case 503:
+				sprintf(statusmsg, "503 Service Unavailable");
+				sprintf(content_type, "text/html");
+				break;
+			default:
+				sprintf(statusmsg, "000"); // caso não tratado
+		}
+		off = sprintf(
+			buf,
+			"HTTP/1.1 %s\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nContent-Length: %ld\r\nContent-Type: %s\r\n\r\n",
+			statusmsg,
+			datebuf,
+			connection_type,
+			content_length,
+			content_type
+		);
+
+	}	
 
 	return off;
 
 	/*operações de formatação de data feitas com ajuda do chatgpt*/
 }
 
-// DRY?
-
 static void entrega_recurso_head(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd) {
 	/* constrói buffer com cabeçalho e o escreve na saída */
 
 	char buf[MAXSIZE];
-	int i = build_head_ok(buf, statinfo, connection_type);
+	int i = build_head(buf, HEAD, 200, &statinfo, 0, connection_type, NULL);
 
 	if (write(saidafd, buf, i) == -1) {
 		perror("(entrega_recurso_head) Erro em write");
@@ -242,7 +277,7 @@ static void entrega_recurso_get(char * path, struct stat statinfo, const char *c
 	int off; // offset a partir do qual read deve escrever em buf, devido ao cabeçalho
 	char buf[MAXSIZE];
 
-	off = build_head_ok(buf, statinfo, connection_type);
+	off = build_head(buf, GET, 200, &statinfo, 0, connection_type, NULL);
 
 	registra_head(buf, registrofd); // registra saída em registro.txt antes de ler recurso
 
@@ -296,20 +331,22 @@ static int busca_htaccess(const char *webspace, char *search_path) {
 			break;
 		}
 		sobe_busca(search_path);
-	} while(strncmp(webspace, search_path, len_webspace));
+	} while(!strncmp(webspace, search_path, len_webspace));
 
 	return sucesso;
 }
 
-static int autentica(const char *webspace, char *full_path, char *auth) {
+static int autentica(const char *webspace, char *full_path, char *auth, char *realm) {
+
 	int len = strlen(full_path);
-	int termina_em_barra = (full_path[len-1] == '/') ? 1 : 0;
+	int termina_em_barra = full_path[len-1] == '/';
 	char *search_path;
 
 	// começa supondo que full_path representa diretório e buscando .htaccess dentro dele (para index.html)
 	switch (termina_em_barra) {
 		case 0:
 			search_path = concatena(full_path, "/.htaccess");
+			break;
 		case 1:
 			search_path = concatena(full_path, ".htaccess");
 	}
@@ -324,34 +361,38 @@ static int autentica(const char *webspace, char *full_path, char *auth) {
 		}
 
 		// path arquivo de senhas
-
+		realm = NULL;
 		close(fd);
 
 		// abre arquivo de senhas
 
-		if (strncmp(auth, "Basic", 5)) {
-			fprintf(stderr, "(autentica) Tipo de autenticação não suportado");
+		if (auth == NULL || strncmp(auth, "Basic", 5)) {
+			fprintf(stderr, "(autentica) Campo de autenticação não reconhecido.\n");
 			close(fd);
 			free(search_path);
 			return 0;
 		}
 
-		char *credenciais = strndup(auth+5, strlen(auth+5));
+		char *credenciaisb64 = strndup(auth+5, strlen(auth+5));
+		int out_len;
+		char *credenciais = base64_decode(credenciaisb64, strlen(credenciaisb64), &out_len);
+		free(credenciaisb64);
 
-		//decodifica
+		printf("Credenciais: %s\n", credenciais);
 		//busca usuario
 		//crypt
 		//verifica senha
 
+		free(credenciais);
 		free(search_path);
-		return 1;
+		return 1; //mudar
 	}
 
 	free(search_path);
 	return 1;
 }
 
-static int trata_gethead(const char *webspace, const params p, int req_code, int saidafd, int registrofd) {
+static int trata_gethead(const char *webspace, const params p, int req_code, int saidafd, int registrofd, char *realm) {
 	/*responde requisição get ou head, ou retorna status code de erro*/
 	// req_code == 0: GET; req_code == 1: HEAD
 
@@ -365,11 +406,11 @@ static int trata_gethead(const char *webspace, const params p, int req_code, int
 		free(full_path);
 		return 403; // caso não inicie: forbidden
 	}
-	/*
-	if (!autentica(webspace, full_path, p.auth)) {
+	
+	if (!autentica(webspace, full_path, p.auth, realm)) {
 		free(full_path);
 		return 401;
-	}*/
+	}
 
 	if (stat(full_path, &statinfo) == -1) { // chama stat e verifica se houve erro
 		switch (errno) { // stat modifica errno com base em erro
@@ -475,7 +516,7 @@ static void trata_trace(const char *request, const char *connection_type, int sa
 
 	char buf[MAXSIZE];
 
-	build_head_err_trace(buf, 200, strlen(request), connection_type); // preenche buf com cabeçalho
+	build_head(buf, TRACE, 200, NULL, strlen(request), connection_type, NULL); // preenche buf com cabeçalho
 
 	registra_head(buf, registrofd); // registra cabeçalho em registro.txt antes de requisição ser concatenada a buf
 
@@ -488,7 +529,7 @@ static void trata_trace(const char *request, const char *connection_type, int sa
 
 }
 
-void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd) {
+void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm) {
 	/*resposta a requisição mal sucedida*/
 
 	char buf[MAXSIZE];
@@ -501,6 +542,9 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 			size = strlen(e400);
 			msg = e400;
 			break;
+		case 401:
+			size = strlen(e401);
+			msg = e401;
 		case 403:
 			size = strlen(e403);
 			msg = e403;
@@ -518,7 +562,7 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 			exit(3);
 	}
 
-	int off = build_head_err_trace(buf, status, size, connection_type);
+	int off = build_head(buf, req_code, status, NULL, size, connection_type, NULL);
 
 	registra_head(buf, registrofd); // registra saída em registro.txt antes de ler html de erro
 
@@ -541,14 +585,15 @@ int process_request(const char *webspace, const char *request, const params p, i
 
 	int result = 0; // guarda status code retornado por trata_gethead()
 	int req_code = -1; // identifica tipo de requisição (começa inválido). Utilizado para não trabalhar com strings dentro de trata_gethead e erro
+	char *realm = NULL;
 
 	if (strcmp(p.req_type, "GET") == 0) {
 		req_code = GET;
-		result = trata_gethead(webspace, p, req_code, saidafd, registrofd);
+		result = trata_gethead(webspace, p, req_code, saidafd, registrofd, realm);
 	}
 	else if (strcmp(p.req_type, "HEAD") == 0) {
 		req_code = HEAD;
-		result = trata_gethead(webspace, p, req_code, saidafd, registrofd);
+		result = trata_gethead(webspace, p, req_code, saidafd, registrofd, realm);
 	}
 	else if (strcmp(p.req_type, "OPTIONS") == 0) {
 		req_code = OPTIONS;
@@ -558,12 +603,15 @@ int process_request(const char *webspace, const char *request, const params p, i
 		req_code = TRACE;
 		trata_trace(request, p.connection_type, saidafd, registrofd);
 	} else {
-		trata_erro(400, p.connection_type, req_code, saidafd, registrofd); // servidor apenas reconhece 4 tipos acima. Devolve 400 caso requisição seja diferente
+		trata_erro(400, p.connection_type, req_code, saidafd, registrofd, realm); // servidor apenas reconhece 4 tipos acima. Devolve 400 caso requisição seja diferente
 	}
 
 	if (result != 0) { // imprime mensagem de erro caso houve algum em requisição GET ou HEAD (apenas cabeçalho)
-		trata_erro(result, p.connection_type, req_code, saidafd, registrofd);
+		trata_erro(result, p.connection_type, req_code, saidafd, registrofd, realm);
 	}
+
+	if (realm)
+		free(realm);
 
 	return result;
 }

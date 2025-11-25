@@ -7,5 +7,5 @@ typedef struct params {
     char *auth;
 } params;
 
-void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd);
+void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm);
 int process_request(const char *webspace, const char *request, const params p, int saidafd, int registrofd);
