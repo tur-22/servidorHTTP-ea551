@@ -46,6 +46,8 @@ static void trata_options(const char *connection_type, int saidafd, int registro
 static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
 static int busca_htaccess(const char *webspace, char *search_path);
 static void sobe_busca(char *search_path);
+static int busca_credenciais(const char *usuario, const char *hash, const char *htpath);
+static int verifica_credenciais(const char *credenciais, const char *htpath);
 static int autentica(const char *webspace, char *full_path, char *auth, char *realm);
 
 /*Feito com IA*/
@@ -172,6 +174,7 @@ static void registra_head(char *buf, int registrofd) {
 }
 
 static int build_head(char *buf, int req_code, int status, const struct stat *statinfo, size_t content_length, const char *connection_type, const char *realm) {
+	/*Constrói cabeçalho de resposta apropriado para a requisição e o salva em buf*/
 
 	char datebuf[64]; // guarda data atual formatada (sem \r\n)
 	char statusmsg[32]; // guarda mensagem referente ao status code, a ser exibida na primeira linha da resposta
@@ -249,7 +252,6 @@ static int build_head(char *buf, int req_code, int status, const struct stat *st
 			content_length,
 			content_type
 		);
-
 	}	
 
 	return off;
@@ -315,7 +317,7 @@ static void entrega_recurso(char * path, struct stat statinfo, const char *conne
 }
 
 static void sobe_busca(char *search_path) {
-	/*modifica search_path para conter path de .htaccess no diretório acima*/
+	/*modifica search_path para conter path de possível .htaccess no diretório acima*/
 	dirname(search_path);
 	dirname(search_path);
 	strcat(search_path, "/.htaccess");
@@ -337,64 +339,63 @@ static int busca_htaccess(const char *webspace, char *search_path) {
 	return sucesso;
 }
 
-static int busca_credenciais(const char *usuario, const char *hash, const char *htpath) {
-	int fd;
-	if ((fd = open(htpath, O_RDONLY)) == -1) { // abre .htpassword
-		perror("(autentica) Erro em open");
+static int busca_credenciais(const char *usuario, const char *senha, const char *htpath) {
+	/*Itera sobre arquivo de senhas buscando informações de login*/
+
+	FILE *fp;
+	if (!(fp = fopen(htpath, "r"))) { // abre .htaccess
+		perror("(autentica) Erro em fopen");
 		exit(errno);
+	}	
+	
+	char linha[512];
+
+	char *saveptr; // para strtok
+	char *usuario_arquivo;
+	char *senha_arquivo;
+
+	struct crypt_data data; // para crypt
+    data.initialized = 0;
+
+	while (fgets(linha, sizeof(linha), fp)) {
+		usuario_arquivo = strtok_r(linha, ":\n", &saveptr);
+		senha_arquivo = strtok_r(NULL, ":\n", &saveptr);
+
+		char salt[21];
+
+		strncpy(salt, senha_arquivo, 20);
+		salt[20] = '\0';	
+
+		char *hash = crypt_r(senha, salt, &data); // thread safe
+
+		if (!hash || hash[0] == '*') { 
+			perror("Erro em crypt");
+			exit(errno);
+		}
+
+		if (strcmp(usuario, usuario_arquivo) == 0) {
+			if (strcmp(hash, senha_arquivo) == 0) {
+				fclose(fp);
+				return 1;
+			}
+		}
 	}
 
-	close(fd);
+	fclose(fp);
+	return 0;
 }
 
 static int verifica_credenciais(const char *credenciais, const char *htpath) {
-	/*Busca informações de login em arquivo de senhas com path htpath*/
+	/*Verifica se credenciais estão presentes em arquivo de senhas com path htpath*/
 
 	char *credenciais_cpy = strdup(credenciais);
-	char *usuario = strtok(credenciais, ":");
-	char *senha = strtok(NULL, ":");
 
-	//Obtém hash de senha
-	struct crypt_data data;
-    data.initialized = 0;
+	char *saveptr;
+	char *usuario = strtok_r(credenciais_cpy, ":", &saveptr);
+	char *senha = strtok_r(NULL, ":", &saveptr);
 
-	/*IA - Geração de salt*/
-
-	/* 1. Preparar o Seed baseado no horário atual */
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    
-    // Mistura segundos e microssegundos para o seed ser mais "único" por thread
-    unsigned int seed = (unsigned int)(tv.tv_sec ^ tv.tv_usec);
-
-    /* 2. Gerar o SALT Pseudo-Aleatório
-       Formato do Salt SHA-512: $6$saltstring$
-       O 'saltstring' deve ter até 16 caracteres do conjunto [a-zA-Z0-9./]
-    */
-    const char *charset = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    char salt[21]; // $6$ + 16 chars + $ + \0
-    
-    strcpy(salt, "$6$"); // Prefixo para SHA-512
-    int offset = 3;
-    
-    for (int i = 0; i < 16; i++) {
-        // rand_r é thread-safe, diferente de rand()
-        int index = rand_r(&seed) % 64; 
-        salt[offset + i] = charset[index];
-    }
-    salt[offset + 16] = '$'; // Terminador do salt (opcional, mas boa prática)
-    salt[offset + 17] = '\0';
-
-	/*ENDIA*/
-
-	char *hash = crypt_r(senha, salt, &data); // thread_safe
-
-	if (!hash || hash[0] == '*') { 
-		perror("Erro em crypt");
-		exit(errno);
-	}
-
-	int autenticado = busca_credenciais(usuario, hash, htpath);
+	int autenticado = busca_credenciais(usuario, senha, htpath);
+	
 	free(credenciais_cpy);
 	return autenticado;
 }
@@ -434,24 +435,26 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 			htpath[len-1] = '\0'; // remove \n do final do path
 
 		if (auth == NULL || strncmp(auth, "Basic", 5)) {
-			fprintf(stderr, "(autentica) Campo de autorização não reconhecido.\n");
+			printf("Campo de autorização válido requerido.\n\n");
 			free(search_path);
 			return 0; // não autenticado
 		}
 
-		char *credenciaisb64 = strndup(auth+5, strlen(auth+5));
+		char *credenciaisb64 = strndup(auth+5, strlen(auth+5)); // desconsidera "Basic"
 		int out_len;
 		char *credenciais = base64_decode(credenciaisb64, strlen(credenciaisb64), &out_len);
 		free(credenciaisb64);
 
-		printf("Credenciais: %s\n", credenciais);
+		printf("Credenciais em claro: %s\n", credenciais);
 
 		if (!verifica_credenciais(credenciais, htpath)) {
 			free(credenciais);
+			printf("Falha na autenticação.\n\n");
 			return 0; // não autenticado
 		}
 
 		free(credenciais);
+		printf("Autenticação bem sucedida.\n\n");
 	}
 
 	free(search_path);
@@ -662,7 +665,7 @@ int process_request(const char *webspace, const char *request, const params p, i
 		req_code = TRACE;
 		trata_trace(request, p.connection_type, saidafd, registrofd);
 	} else {
-		trata_erro(400, p.connection_type, req_code, saidafd, registrofd, realm); // servidor apenas reconhece 4 tipos acima. Devolve 400 caso requisição seja diferente
+		trata_erro(400, p.connection_type, req_code, saidafd, registrofd, NULL); // servidor apenas reconhece 4 tipos acima. Devolve 400 caso requisição seja diferente
 	}
 
 	if (result != 0) { // imprime mensagem de erro caso houve algum em requisição GET ou HEAD (apenas cabeçalho)

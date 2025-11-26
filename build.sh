@@ -11,5 +11,5 @@ cd "$(dirname "$BASH_SOURCE[0]")" # leva pwd para raiz do repo
 cd src
 flex especifica.l
 bison -d especifica.y
-gcc especifica.tab.c lex.yy.c process.c $1.c -o ../bin/servidor_$1 -lfl -lssl -lcrypto
+gcc especifica.tab.c lex.yy.c process.c $1.c -o ../bin/servidor_$1 -lfl -lssl -lcrypto -lcrypt
 rm especifica.tab.c lex.yy.c especifica.tab.h
