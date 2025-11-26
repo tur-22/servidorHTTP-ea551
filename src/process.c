@@ -366,14 +366,17 @@ static int busca_credenciais(const char *usuario, const char *senha, const char 
 		strncpy(salt, senha_arquivo, 20);
 		salt[20] = '\0';	
 
-		char *hash = crypt_r(senha, salt, &data); // thread safe
-
-		if (!hash || hash[0] == '*') { 
-			perror("Erro em crypt");
-			exit(errno);
-		}
+		char *hash;
 
 		if (strcmp(usuario, usuario_arquivo) == 0) {
+			
+			hash = crypt_r(senha, salt, &data); // thread safe
+
+			if (!hash || hash[0] == '*') { 
+				perror("Erro em crypt"); // cai aqui caso não seja inserida senha, por exemplo
+				return 0;
+			}
+
 			if (strcmp(hash, senha_arquivo) == 0) {
 				fclose(fp);
 				return 1;
@@ -424,7 +427,7 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 			exit(errno);
 		}
 
-		// supondo que htpath possui formato [path .htpassword] + \n + [realm]
+		// supondo que .htaccess possui formato [path .htpassword] + \n + [realm]
 		char htpath[MAXSIZE];
 		fgets(htpath, sizeof(htpath), fp);
 		fgets(realm, sizeof(realm), fp);
