@@ -344,7 +344,7 @@ static int busca_credenciais(const char *usuario, const char *senha, const char 
 
 	FILE *fp;
 	if (!(fp = fopen(htpath, "r"))) { // abre .htaccess
-		perror("(autentica) Erro em fopen");
+		perror("(busca_credenciais) Erro em fopen");
 		exit(errno);
 	}	
 	
@@ -358,7 +358,7 @@ static int busca_credenciais(const char *usuario, const char *senha, const char 
     data.initialized = 0;
 
 	while (fgets(linha, sizeof(linha), fp)) {
-		usuario_arquivo = strtok_r(linha, ":\n", &saveptr);
+		usuario_arquivo = strtok_r(linha, ":\n", &saveptr); // ignora \n pois é passado como separador
 		senha_arquivo = strtok_r(NULL, ":\n", &saveptr);
 
 		char salt[21];
@@ -372,7 +372,7 @@ static int busca_credenciais(const char *usuario, const char *senha, const char 
 			
 			hash = crypt_r(senha, salt, &data); // thread safe
 
-			if (!hash || hash[0] == '*') { 
+			if (!hash || hash[0] == '*') {  // hash null ou hash de erro (começa em *, conforme manual)
 				perror("Erro em crypt"); // cai aqui caso não seja inserida senha, por exemplo
 				return 0;
 			}
@@ -610,6 +610,7 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 		case 401:
 			size = strlen(e401);
 			msg = e401;
+			break;
 		case 403:
 			size = strlen(e403);
 			msg = e403;
