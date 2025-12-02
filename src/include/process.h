@@ -1,6 +1,9 @@
 /*Interface para acesso a funções não estáticas de process.c e T.O. de parâmetros de requisição*/
 
-typedef struct params {
+typedef struct params { // parâmetros de uso situacional a serem passados à rotina process_request
+    char *webspace;
+    char *request;
+    char *req_msg;
     char *req_type;
     char *resource;
     char *connection_type;
@@ -8,4 +11,4 @@ typedef struct params {
 } params;
 
 void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm);
-int process_request(const char *webspace, const char *request, const params p, int saidafd, int registrofd);
+int process_request(const params p, int saidafd, int registrofd);

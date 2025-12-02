@@ -36,8 +36,11 @@ void * worker_thread(void * arg) {
 	thread_args *args = (thread_args *)arg; // faz cast de arg para struct thread_args
 
 	int soquete_msg = args->soquete_msg;
-	char *webspace = args->webspace;
 	int registrofd = args->registrofd;
+
+	params p; // parâmetros de uso situacional a serem passados à rotina process_request
+
+	p.webspace = args->webspace;
 
 	/* Declarações para poll */
 	int s; // retorno de poll (número de fds disponíveis)
@@ -72,8 +75,16 @@ void * worker_thread(void * arg) {
 			exit(errno);
 		}
 
+		p.request = buf;
+
+		/*Separa cabeçalho da requisição de possível corpo*/
+		char *header_end = strstr(buf, "\r\n\r\n");
+		int header_len = header_end == NULL ? i : header_end - buf + 4; // encontra comprimento do cabeçalho da requisição
+
+		p.req_msg = header_end;
+
 		pthread_mutex_lock(&processing_mutex); // região de processamento da mensagem (parser possui vários recursos globais)
-		if (!(yyin = fmemopen(buf, i, "r"))) { // chatgpt (pensei em fazer com [fdopen, fseek e fread] ou [read, lseek e fdopen], mas não funciona para sockets)
+		if (!(yyin = fmemopen(buf, header_len, "r"))) { // yyin contém apenas cabeçalho de requisição
 			perror("(worker_thread) Erro em abertura de arquivo de entrada");
 			exit(errno);
 		}
@@ -92,8 +103,6 @@ void * worker_thread(void * arg) {
 			fprintf(stderr, "Worker thread (socket %d): Requisição vazia ou malformada recebida. Ignorando.\n", soquete_msg);
 			break;
 		}
-
-		params p;
 
 		p.req_type = strdup(campos->nome); // tipo de requisição
 		p.resource = strdup(campos->valores->nome); // caminho para o recurso buscado
@@ -119,7 +128,7 @@ void * worker_thread(void * arg) {
 			exit(errno);
 		}
 		
-		process_request(webspace, buf, p, soquete_msg, registrofd);
+		process_request(p, soquete_msg, registrofd);
 		
 		free(p.req_type);
 		free(p.resource);
@@ -137,7 +146,6 @@ void * worker_thread(void * arg) {
 	}
 
 	close(soquete_msg);
-	free(args->webspace);
 	free(args);
 
 	pthread_mutex_lock(&curr_mutex);
@@ -206,7 +214,7 @@ int main(int argc, char *argv[]) {
 
 			thread_args *args = malloc(sizeof(thread_args));
 			args->soquete_msg = soquete_msg;
-			args->webspace = strdup(argv[2]);
+			args->webspace = argv[2];
 			args->registrofd = registrofd;
 			
 			if (pthread_create(&thread_id, NULL, worker_thread, (void *)args) != 0) {

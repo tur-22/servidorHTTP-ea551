@@ -28,6 +28,9 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
+	params p;
+	p.webspace = argv[1];
+
 	int soquete, soquete_msg;
 	struct sockaddr_in meu_servidor, meu_cliente;
 	int tam_endereco = sizeof(meu_cliente);
@@ -92,7 +95,15 @@ int main(int argc, char *argv[]) {
 				exit(errno);
 			}
 
-			if (!(yyin = fmemopen(buf, i, "r"))) { // chatgpt (pensei em fazer com [fdopen, fseek e fread] ou [read, lseek e fdopen], mas não funciona para sockets)
+			p.request = buf;
+
+			/*Separa cabeçalho da requisição de possível corpo*/
+			char *header_end = strstr(buf, "\r\n\r\n");
+			int header_len = header_end == NULL ? i : header_end - buf + 4; // encontra comprimento do cabeçalho da requisição
+
+			p.req_msg = header_end;
+
+			if (!(yyin = fmemopen(buf, header_len, "r"))) { // chatgpt (pensei em fazer com [fdopen, fseek e fread] ou [read, lseek e fdopen], mas não funciona para sockets)
 				perror("Erro em abertura de arquivo de entrada");
 				exit(errno);
 			}
@@ -110,8 +121,6 @@ int main(int argc, char *argv[]) {
 				fprintf(stderr, "Requisição vazia ou malformada recebida. Ignorando.\n");
 				break;          // Volta para o início do while externo e espera a próxima
 			}
-
-			params p;
 
 			p.req_type = campos->nome; // tipo de requisição
 			p.resource = campos->valores->nome; // caminho para o recurso buscado
@@ -139,7 +148,7 @@ int main(int argc, char *argv[]) {
 				exit(errno);
 			}
 			
-			process_request(argv[1], buf, p, soquete_msg, registrofd);
+			process_request(p, soquete_msg, registrofd);
 
 			imprime_campos(campos);
 

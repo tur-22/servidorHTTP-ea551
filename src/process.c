@@ -21,6 +21,7 @@
 #define HEAD 1
 #define OPTIONS 2
 #define TRACE 3
+#define POST 4
 
 #ifndef MAXSIZE
 #define MAXSIZE 16384
@@ -41,9 +42,10 @@ static int build_head(char *buf, int req_code, int status, const struct stat *st
 static void entrega_recurso_head(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso_get(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso(char * path, struct stat statinfo, const char *connection_type, int req_code, int saidafd, int registrofd);
-static int trata_gethead(const char *webspace, params p, int req_code, int saidafd, int registrofd, char *realm);
+static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, char *auth, int req_code, int saidafd, int registrofd, char *realm);
 static void trata_options(const char *connection_type, int saidafd, int registrofd);
 static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
+static void trata_post();
 static int busca_htaccess(const char *webspace, char *search_path);
 static void sobe_busca(char *search_path);
 static int busca_credenciais(const char *usuario, const char *hash, const char *htpath);
@@ -187,7 +189,7 @@ static int build_head(char *buf, int req_code, int status, const struct stat *st
 
 		off = sprintf(
 			buf,
-			"HTTP/1.1 204 No Content\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nAllow: OPTIONS, GET, HEAD, TRACE\r\n\r\n",
+			"HTTP/1.1 204 No Content\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nAllow: OPTIONS, GET, HEAD, TRACE, POST\r\n\r\n",
 			datebuf,
 			connection_type
 		);
@@ -361,16 +363,11 @@ static int busca_credenciais(const char *usuario, const char *senha, const char 
 		usuario_arquivo = strtok_r(linha, ":\n", &saveptr); // ignora \n pois é passado como separador
 		senha_arquivo = strtok_r(NULL, ":\n", &saveptr);
 
-		char salt[21];
-
-		strncpy(salt, senha_arquivo, 20);
-		salt[20] = '\0';	
-
 		char *hash;
 
 		if (strcmp(usuario, usuario_arquivo) == 0) {
 			
-			hash = crypt_r(senha, salt, &data); // thread safe
+			hash = crypt_r(senha, senha_arquivo, &data); // thread safe
 
 			if (!hash || hash[0] == '*') {  // hash null ou hash de erro (começa em *, conforme manual)
 				perror("Erro em crypt"); // cai aqui caso não seja inserida senha, por exemplo
@@ -464,11 +461,12 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 	return 1; // autenticado
 }
 
-static int trata_gethead(const char *webspace, const params p, int req_code, int saidafd, int registrofd, char *realm) {
+static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, char *auth,
+	 int req_code, int saidafd, int registrofd, char *realm) {
 	/*responde requisição get ou head, ou retorna status code de erro*/
 	// req_code == 0: GET; req_code == 1: HEAD
 
-	char *full_path = concatena(webspace, p.resource);
+	char *full_path = concatena(webspace, resource);
 	full_path = simplifica_path(full_path); // simplifica path antes de verificar se inicia com path do webspace
 	struct stat statinfo;	
 
@@ -479,7 +477,7 @@ static int trata_gethead(const char *webspace, const params p, int req_code, int
 		return 403; // caso não inicie: forbidden
 	}
 	
-	if (!autentica(webspace, full_path, p.auth, realm)) {
+	if (!autentica(webspace, full_path, auth, realm)) {
 		free(full_path);
 		return 401;
 	}
@@ -506,7 +504,7 @@ static int trata_gethead(const char *webspace, const params p, int req_code, int
 	switch(statinfo.st_mode & S_IFMT) { // testa tipo de arquivo
 		
 		case S_IFREG: // arquivo regular
-			entrega_recurso(full_path, statinfo, p.connection_type, req_code, saidafd, registrofd);
+			entrega_recurso(full_path, statinfo, connection_type, req_code, saidafd, registrofd);
 			free(full_path);
 			return 0;
 
@@ -535,7 +533,7 @@ static int trata_gethead(const char *webspace, const params p, int req_code, int
 				// caso contrário: open, read, write
 				char *fuller_path = concatena(full_path, "/index.html"); // concatena /index.html ao final da string
 				free(full_path);
-				entrega_recurso(fuller_path, file_statinfo, p.connection_type, req_code, saidafd, registrofd);
+				entrega_recurso(fuller_path, file_statinfo, connection_type, req_code, saidafd, registrofd);
 				free(fuller_path);
 				return 0;
 			}
@@ -549,7 +547,7 @@ static int trata_gethead(const char *webspace, const params p, int req_code, int
 				// caso contrário: open, read, write
 				char *fuller_path = concatena(full_path, "/welcome.html");
 				free(full_path);
-				entrega_recurso(fuller_path, file_statinfo, p.connection_type, req_code, saidafd, registrofd);
+				entrega_recurso(fuller_path, file_statinfo, connection_type, req_code, saidafd, registrofd);
 				free(fuller_path);
 				return 0;
 			}
@@ -592,6 +590,10 @@ static void trata_trace(const char *request, const char *connection_type, int sa
 		exit(errno);
 	}
 
+}
+
+void trata_post() {
+	
 }
 
 void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm) {
@@ -646,7 +648,7 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 	
 }
 
-int process_request(const char *webspace, const char *request, const params p, int saidafd, int registrofd) {
+int process_request(const params p, int saidafd, int registrofd) {
 	/* Chama função respectiva para tratar requisição */
 
 	int result = 0; // guarda status code retornado por trata_gethead()
@@ -655,11 +657,11 @@ int process_request(const char *webspace, const char *request, const params p, i
 
 	if (strcmp(p.req_type, "GET") == 0) {
 		req_code = GET;
-		result = trata_gethead(webspace, p, req_code, saidafd, registrofd, realm);
+		result = trata_gethead(p.webspace, p.resource, p.connection_type, p.auth, req_code, saidafd, registrofd, realm);
 	}
 	else if (strcmp(p.req_type, "HEAD") == 0) {
 		req_code = HEAD;
-		result = trata_gethead(webspace, p, req_code, saidafd, registrofd, realm);
+		result = trata_gethead(p.webspace, p.resource, p.connection_type, p.auth, req_code, saidafd, registrofd, realm);
 	}
 	else if (strcmp(p.req_type, "OPTIONS") == 0) {
 		req_code = OPTIONS;
@@ -667,9 +669,13 @@ int process_request(const char *webspace, const char *request, const params p, i
 	}
 	else if (strcmp(p.req_type, "TRACE") == 0) {
 		req_code = TRACE;
-		trata_trace(request, p.connection_type, saidafd, registrofd);
+		trata_trace(p.request, p.connection_type, saidafd, registrofd);
+	}
+	else if (strcmp(p.req_type, "POST") == 0) {
+		req_code = POST;
+		trata_post();
 	} else {
-		trata_erro(400, p.connection_type, req_code, saidafd, registrofd, NULL); // servidor apenas reconhece 4 tipos acima. Devolve 400 caso requisição seja diferente
+		trata_erro(400, p.connection_type, req_code, saidafd, registrofd, NULL); // servidor apenas reconhece 5 tipos acima. Devolve 400 caso requisição seja diferente
 	}
 
 	if (result != 0) { // imprime mensagem de erro caso houve algum em requisição GET ou HEAD (apenas cabeçalho)
