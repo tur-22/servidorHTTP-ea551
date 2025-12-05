@@ -45,7 +45,8 @@ static void entrega_recurso(char * path, struct stat statinfo, const char *conne
 static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, char *auth, int req_code, int saidafd, int registrofd, char *realm);
 static void trata_options(const char *connection_type, int saidafd, int registrofd);
 static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
-static void trata_post();
+static void interpreta_formulario(const char *req_msg, char *nomeusuario, char *senhaatual, char *novasenha, char *confirmanovasenha);
+static void trata_post(const char *req_msg, const char *connection_type, int saidafd, int registrofd);
 static int busca_htaccess(const char *webspace, char *search_path);
 static void sobe_busca(char *search_path);
 static int busca_credenciais(const char *usuario, const char *hash, const char *htpath);
@@ -72,6 +73,7 @@ static unsigned char *base64_decode(const char *input, int length, int *out_len)
 
     return buffer;
 }
+/*FIM IA*/
 
 static char * concatena(const char *str1, const char *str2) { // const: prometo não alterar conteúdo de strings
 	/* Concatena duas strings em um novo ponteiro para char */
@@ -522,7 +524,7 @@ static int trata_gethead(const char *webspace, const char *resource, const char 
 				exit(errno);
 			}
 			
-			// REFACTORING: trocar ifs abaixo por função
+			// REFACTOR: trocar ifs abaixo por função
 
 			if (fstatat(dirfd, "index.html", &file_statinfo, 0) == 0) { // se existe index.html
 				close(dirfd);
@@ -592,8 +594,68 @@ static void trata_trace(const char *request, const char *connection_type, int sa
 
 }
 
-void trata_post() {
-	
+/*GEMINI: decodificação url-encoded*/
+// Função auxiliar para converter caractere Hex para Inteiro
+// Ex: 'A' -> 10, 'b' -> 11, '9' -> 9
+static int hex_to_int(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+}
+
+// Decodifica a string in-place (modifica a string original)
+static void url_decode(char *str) {
+    char *leitura = str;  // Ponteiro para ler a string codificada
+    char *escrita = str;  // Ponteiro para escrever a versão decodificada
+
+    while (*leitura) {
+        if (*leitura == '+') {
+            *escrita = ' ';
+            leitura++;
+        } 
+        else if (*leitura == '%' && isxdigit(leitura[1]) && isxdigit(leitura[2])) {
+            // Encontrou %XX. Converte os dois próximos chars hex para 1 char byte
+            *escrita = (char)((hex_to_int(leitura[1]) << 4) | hex_to_int(leitura[2]));
+            leitura += 3; // Pula o %, o dígito 1 e o dígito 2
+        } 
+        else {
+            // Caractere normal, apenas copia
+            *escrita = *leitura;
+            leitura++;
+        }
+        escrita++;
+    }
+    *escrita = '\0'; // Finaliza a string decodificada
+}
+/*FIM GEMINI*/
+
+static void interpreta_formulario(const char *req_msg, char *nomeusuario, char *senhaatual, char *novasenha, char *confirmanovasenha) {
+	char *saveptr; //strtok
+	char *req_msg_cpy = strdup(req_msg);
+
+	strtok_r(req_msg_cpy, "=", &saveptr);
+	nomeusuario = (req_msg_cpy, "&", &saveptr);
+	strtok_r(req_msg_cpy, "=", &saveptr);
+	senhaatual = (req_msg_cpy, "&", &saveptr);
+	strtok_r(req_msg_cpy, "=", &saveptr);
+	novasenha = (req_msg_cpy, "&", &saveptr);
+	strtok_r(req_msg_cpy, "=", &saveptr);
+	confirmanovasenha = (req_msg_cpy, "&", &saveptr);
+
+	free(req_msg_cpy);
+
+}
+
+static void trata_post(const char *resource, const char *req_msg, const char *connection_type, int saidafd, int registrofd) {
+	char nomeusuario[128];
+	char senhaatual[128];
+	char novasenha[128];
+	char confirmanovasenha[128];
+
+	interpreta_formulario(req_msg, nomeusuario, senhaatual, novasenha, confirmanovasenha);
+
+
 }
 
 void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm) {
@@ -673,7 +735,7 @@ int process_request(const params p, int saidafd, int registrofd) {
 	}
 	else if (strcmp(p.req_type, "POST") == 0) {
 		req_code = POST;
-		trata_post();
+		trata_post(p.resource, p.req_msg, p.connection_type, saidafd, registrofd);
 	} else {
 		trata_erro(400, p.connection_type, req_code, saidafd, registrofd, NULL); // servidor apenas reconhece 5 tipos acima. Devolve 400 caso requisição seja diferente
 	}
