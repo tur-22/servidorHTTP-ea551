@@ -7,6 +7,7 @@
 #include <time.h>
 #include <libgen.h>
 #include <crypt.h>
+#include <ctype.h>
 
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -28,9 +29,12 @@
 #endif
 
 static const char * e400 = "<!DOCTYPE html><html><head><title>400 Bad Request</title></head><body><h1>400 Bad Request</h1><p>Aqui est&aacute; o conte&uacute;do de 400.html.</p></body></html>";
+static const char * e400novasenha = "<!DOCTYPE html><html><head><title>400 Bad Request</title></head><body><h1>400 Bad Request</h1><p>Os dois campos de nova senha n&atilde;o coincidem.</p></body></html>";
+static const char * e400login = "<!DOCTYPE html><html><head><title>400 Bad Request</title></head><body><h1>400 Bad Request</h1><p>Usu&aacute;rio e/ou senha n&atilde;o conferem.</p></body></html>";
 static const char * e401 = "<!DOCTYPE html><html><head><title>401 Unauthorized</title></head><body><h1>401 Unauthorized</h1><p>Aqui est&aacute; o conte&uacute;do de 401.html.</p></body></html>";
 static const char * e403 = "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>403 Forbidden</h1><p>Aqui est&aacute; o conte&uacute;do de 403.html.</p></body></html>";
 static const char * e404 = "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Aqui est&aacute; o conte&uacute;do de 404.html.</p></body></html>";
+static const char * e500 = "<!DOCTYPE html><html><head><title>500 Internal Server Error</title></head><body><h1>500 Internal Server Error</h1><p>Erro na leitura do arquivo de senhas.</p></body></html>";
 static const char * e503 = "<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head><body><h1>503 Service Unavailable</h1><p>O servidor est&aacute; sobrecarregado. Tente novamente.</p></body></html>";
 
 static unsigned char *base64_decode(const char *input, int length, int *out_len);
@@ -42,16 +46,18 @@ static int build_head(char *buf, int req_code, int status, const struct stat *st
 static void entrega_recurso_head(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso_get(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso(char * path, struct stat statinfo, const char *connection_type, int req_code, int saidafd, int registrofd);
-static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, char *auth, int req_code, int saidafd, int registrofd, char *realm);
-static void trata_options(const char *connection_type, int saidafd, int registrofd);
-static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
-static void interpreta_formulario(const char *req_msg, char *nomeusuario, char *senhaatual, char *novasenha, char *confirmanovasenha);
-static void trata_post(const char *req_msg, const char *connection_type, int saidafd, int registrofd);
-static int busca_htaccess(const char *webspace, char *search_path);
+static int le_htaccess(const char *htapath, char *htppath, int read_realm, char *realm);
 static void sobe_busca(char *search_path);
+static int busca_htaccess(const char *webspace, char *search_path);
 static int busca_credenciais(const char *usuario, const char *hash, const char *htpath);
 static int verifica_credenciais(const char *credenciais, const char *htpath);
 static int autentica(const char *webspace, char *full_path, char *auth, char *realm);
+static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, char *auth, int req_code, int saidafd, int registrofd, char *realm);
+static void trata_options(const char *connection_type, int saidafd, int registrofd);
+static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
+static void interpreta_form(char *req_msg_cpy, char **nomeusuario, char **senhaatual, char **novasenha, char **confirmanovasenha);
+static int altera_senha(const char *htppath, const char *nomeusuario, const char *senhaatual, const char *novasenha);
+static void trata_post(const char *webspace, const char *resource, const char *req_msg, const char *connection_type, int saidafd, int registrofd);
 
 /*Feito com IA*/
 static unsigned char *base64_decode(const char *input, int length, int *out_len) {
@@ -320,6 +326,21 @@ static void entrega_recurso(char * path, struct stat statinfo, const char *conne
 
 }
 
+static int le_htaccess(const char *htapath, char *htppath, int read_realm, char *realm) {
+	/*extrai path de .htpassword e realm de .htaccess*/
+	FILE *fp;
+	if (!(fp = fopen(htapath, "r"))) {
+		fclose(fp);
+		return 500; // erro em abertura de .htaccess
+	}
+
+	fgets(htppath, MAXSIZE, fp);
+	if (read_realm)
+		fgets(realm, 256, fp);
+	fclose(fp);
+	return 0;
+}
+
 static void sobe_busca(char *search_path) {
 	/*modifica search_path para conter path de possível .htaccess no diretório acima*/
 	dirname(search_path);
@@ -347,7 +368,7 @@ static int busca_credenciais(const char *usuario, const char *senha, const char 
 	/*Itera sobre arquivo de senhas buscando informações de login*/
 
 	FILE *fp;
-	if (!(fp = fopen(htpath, "r"))) { // abre .htaccess
+	if (!(fp = fopen(htpath, "r"))) { // abre .htpassword
 		perror("(busca_credenciais) Erro em fopen");
 		exit(errno);
 	}	
@@ -419,26 +440,25 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 
 	int htaccess = busca_htaccess(webspace, search_path);
 
-	if (htaccess) {
-		FILE *fp;
-		if (!(fp = fopen(search_path, "r"))) { // abre .htaccess
-			perror("(autentica) Erro em fopen");
+	if (htaccess) { // htaccess encontrado
+		char htppath[MAXSIZE]; // path de .htpassword
+
+		int status = le_htaccess(search_path, htppath, 1, realm); 
+
+		free(search_path);
+
+		if (status) {
+			/*erro em abertura de htaccess*/
+			perror("(autentica) Erro em fopen"); 
 			exit(errno);
 		}
 
-		// supondo que .htaccess possui formato [path .htpassword] + \n + [realm]
-		char htpath[MAXSIZE];
-		fgets(htpath, sizeof(htpath), fp);
-		fgets(realm, sizeof(realm), fp);
-		fclose(fp);
-
-		len = strlen(htpath);
+		len = strlen(htppath);
 		if (len)
-			htpath[len-1] = '\0'; // remove \n do final do path
+			htppath[len-1] = '\0'; // remove \n do final do path
 
 		if (auth == NULL || strncmp(auth, "Basic", 5)) {
 			printf("Campo de autorização válido requerido.\n\n");
-			free(search_path);
 			return 0; // não autenticado
 		}
 
@@ -449,7 +469,7 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 
 		printf("Credenciais em claro: %s\n", credenciais);
 
-		if (!verifica_credenciais(credenciais, htpath)) {
+		if (!verifica_credenciais(credenciais, htppath)) {
 			free(credenciais);
 			printf("Falha na autenticação.\n\n");
 			return 0; // não autenticado
@@ -459,7 +479,6 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 		printf("Autenticação bem sucedida.\n\n");
 	}
 
-	free(search_path);
 	return 1; // autenticado
 }
 
@@ -630,35 +649,70 @@ static void url_decode(char *str) {
 }
 /*FIM GEMINI*/
 
-static void interpreta_formulario(const char *req_msg, char *nomeusuario, char *senhaatual, char *novasenha, char *confirmanovasenha) {
+static void interpreta_form(char *req_msg_cpy, char **nomeusuario, char **senhaatual, char **novasenha, char **confirmanovasenha) {
+	/*Separa campos da mensagem da requisição post*/
 	char *saveptr; //strtok
-	char *req_msg_cpy = strdup(req_msg);
 
 	strtok_r(req_msg_cpy, "=", &saveptr);
-	nomeusuario = (req_msg_cpy, "&", &saveptr);
-	strtok_r(req_msg_cpy, "=", &saveptr);
-	senhaatual = (req_msg_cpy, "&", &saveptr);
-	strtok_r(req_msg_cpy, "=", &saveptr);
-	novasenha = (req_msg_cpy, "&", &saveptr);
-	strtok_r(req_msg_cpy, "=", &saveptr);
-	confirmanovasenha = (req_msg_cpy, "&", &saveptr);
+	*nomeusuario = strtok_r(NULL, "&", &saveptr);
+	strtok_r(NULL, "=", &saveptr);
+	*senhaatual = strtok_r(NULL, "&", &saveptr);
+	strtok_r(NULL, "=", &saveptr);
+	*novasenha = strtok_r(NULL, "&", &saveptr);
+	strtok_r(NULL, "=", &saveptr);
+	*confirmanovasenha = strtok_r(NULL, "&", &saveptr);
+}
+
+static int altera_senha(const char *htppath, const char *nomeusuario, const char *senhaatual, const char *novasenha) {
+	/*Tenta modificar senha em .htpassword com base em formulario*/
+	FILE *fp;
+	if (!(fp = fopen(htppath, "r"))) { // abre .htpassword
+		fclose(fp);
+		return 500; // erro em abertura de .htpassword
+	}
+
+}
+
+static void trata_post(const char *webspace, const char *resource, const char *req_msg, const char *connection_type, int saidafd, int registrofd) {
+	char errmsg[512]; // guarda página html de erro
+
+	char *nomeusuario, *senhaatual, *novasenha, *confirmanovasenha;
+	char *req_msg_cpy = strdup(req_msg); // cópia para strtok_r não modificar req_msg
+
+	printf("Mensagem POST: %s\n", req_msg);
+
+	interpreta_form(req_msg_cpy, &nomeusuario, &senhaatual, &novasenha, &confirmanovasenha);
+
+	if (strcmp(novasenha, confirmanovasenha)) { // senhas novas não batem
+		strcpy(errmsg, e400novasenha);
+		free(req_msg_cpy);
+		trata_erro(400, connection_type, POST, saidafd, registrofd, NULL, errmsg);
+		return;
+	}
+
+	char *aux_path = concatena(webspace, resource);
+	dirname(aux_path);
+	char *htapath = concatena(aux_path, "/.htaccess"); // obtém path de .htaccess
+	free(aux_path);
+
+	char htppath[MAXSIZE];
+	int status = le_htaccess(htapath, htppath, 0, NULL); // obtém path de .htpassword
+
+	free(htapath);
+
+	if (status) {
+		/*erro em abertura de .htaccess*/
+		free(req_msg_cpy);
+		trata_erro(500, connection_type, POST, saidafd, registrofd, NULL, NULL);
+		return;
+	}
+
+	status = altera_senha(htppath, nomeusuario, senhaatual, novasenha);
 
 	free(req_msg_cpy);
-
 }
 
-static void trata_post(const char *resource, const char *req_msg, const char *connection_type, int saidafd, int registrofd) {
-	char nomeusuario[128];
-	char senhaatual[128];
-	char novasenha[128];
-	char confirmanovasenha[128];
-
-	interpreta_formulario(req_msg, nomeusuario, senhaatual, novasenha, confirmanovasenha);
-
-
-}
-
-void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm) {
+void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm, const char *errmsg) {
 	/*resposta a requisição mal sucedida*/
 
 	char buf[MAXSIZE];
@@ -666,30 +720,39 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 	size_t size;
 	const char *msg;
 
-	switch (status) {
-		case 400:
-			size = strlen(e400);
-			msg = e400;
-			break;
-		case 401:
-			size = strlen(e401);
-			msg = e401;
-			break;
-		case 403:
-			size = strlen(e403);
-			msg = e403;
-			break;
-		case 404:
-			size = strlen(e404);
-			msg = e404;
-			break;
-		case 503:
-			size = strlen(e503);
-			msg = e503;
-			break;
-		default:
-			perror("(trata_erro) Erro em status code");
-			exit(3);
+	if (!errmsg) { // caso string de msg de erro não seja passada, usar padrão com base em status code.
+		switch (status) {
+			case 400:
+				size = strlen(e400);
+				msg = e400;
+				break;
+			case 401:
+				size = strlen(e401);
+				msg = e401;
+				break;
+			case 403:
+				size = strlen(e403);
+				msg = e403;
+				break;
+			case 404:
+				size = strlen(e404);
+				msg = e404;
+				break;
+			case 500:
+				size = strlen(e500);
+				msg = e500;
+				break;
+			case 503:
+				size = strlen(e503);
+				msg = e503;
+				break;
+			default:
+				perror("(trata_erro) Erro em status code");
+				exit(3);
+		}
+	} else {
+		size = strlen(errmsg);
+		msg = errmsg;
 	}
 
 	int off = build_head(buf, req_code, status, NULL, size, connection_type, realm);
@@ -710,7 +773,7 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 	
 }
 
-int process_request(const params p, int saidafd, int registrofd) {
+void process_request(const params p, int saidafd, int registrofd) {
 	/* Chama função respectiva para tratar requisição */
 
 	int result = 0; // guarda status code retornado por trata_gethead()
@@ -735,14 +798,12 @@ int process_request(const params p, int saidafd, int registrofd) {
 	}
 	else if (strcmp(p.req_type, "POST") == 0) {
 		req_code = POST;
-		trata_post(p.resource, p.req_msg, p.connection_type, saidafd, registrofd);
+		trata_post(p.webspace, p.resource, p.req_msg, p.connection_type, saidafd, registrofd);
 	} else {
-		trata_erro(400, p.connection_type, req_code, saidafd, registrofd, NULL); // servidor apenas reconhece 5 tipos acima. Devolve 400 caso requisição seja diferente
+		trata_erro(400, p.connection_type, req_code, saidafd, registrofd, NULL, NULL); // servidor apenas reconhece 5 tipos acima. Devolve 400 caso requisição seja diferente
 	}
 
 	if (result != 0) { // imprime mensagem de erro caso houve algum em requisição GET ou HEAD (apenas cabeçalho)
-		trata_erro(result, p.connection_type, req_code, saidafd, registrofd, realm);
+		trata_erro(result, p.connection_type, req_code, saidafd, registrofd, realm, NULL);
 	}
-
-	return result;
 }

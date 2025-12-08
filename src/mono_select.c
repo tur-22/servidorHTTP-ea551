@@ -53,6 +53,12 @@ int main(int argc, char *argv[]) {
 	bind(soquete, (struct sockaddr*)&meu_servidor, sizeof(meu_servidor));
 	listen(soquete, 5); // prepara socket e uma lista para receber até 5 conexões
 
+	int registrofd; // file descriptor para registro.txt
+	if ((registrofd = open(argv[2], O_WRONLY | O_CREAT | O_APPEND, 0600)) == -1) {
+		perror("Erro em open (main: registro_fd)");
+		exit(errno);
+	}
+
 	/* Declarações para select */
 	int n; // retorno de select (número de fds disponíveis)
 	long int tolerancia = 8;
@@ -64,8 +70,8 @@ int main(int argc, char *argv[]) {
 
 		// estou presumindo que servidor deve se manter escutando mesmo que nenhum pedido de conexão chegue em 8s. Estou usando select apenas em read (accept bloqueante, select apenas para fechar conexões).
 		if ((soquete_msg = accept(soquete, (struct sockaddr*)&meu_cliente, &tam_endereco)) == -1) {
-				perror("Erro em accept");
-				exit(errno);
+			perror("Erro em accept");
+			exit(errno);
 		}
 
 		printf("Conexão aberta.\n"); // aparentemente navegador abre conexão imediatamente após uma ser fechada (pré-conexão)
@@ -101,7 +107,7 @@ int main(int argc, char *argv[]) {
 			char *header_end = strstr(buf, "\r\n\r\n");
 			int header_len = header_end == NULL ? i : header_end - buf + 4; // encontra comprimento do cabeçalho da requisição
 
-			p.req_msg = header_end;
+			p.req_msg = header_end == NULL ? header_end : header_end + 4; // mensagem após cabeçalho
 
 			if (!(yyin = fmemopen(buf, header_len, "r"))) { // chatgpt (pensei em fazer com [fdopen, fseek e fread] ou [read, lseek e fdopen], mas não funciona para sockets)
 				perror("Erro em abertura de arquivo de entrada");
@@ -124,12 +130,6 @@ int main(int argc, char *argv[]) {
 
 			p.req_type = campos->nome; // tipo de requisição
 			p.resource = campos->valores->nome; // caminho para o recurso buscado
-
-            int registrofd; // file descriptor para registro.txt
-			if ((registrofd = open(argv[2], O_WRONLY | O_CREAT | O_APPEND, 0600)) == -1) { // file descriptor para registro.txt
-				perror("Erro em open (main: registro_fd)");
-				exit(errno);
-			}
 
 			char connection_default[] = "close"; // valor padrão
 			int is_default = 0; // solução barata para ver se pode dar free em connection_type
@@ -173,3 +173,5 @@ int main(int argc, char *argv[]) {
 
 	return 0;
 }
+
+// OBS: se cliente fecha o navegador (conexão), o programa recebe um request igual ao último e termina sua execução por erro ao tentar escrever no socket.

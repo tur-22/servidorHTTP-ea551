@@ -81,7 +81,7 @@ void * worker_thread(void * arg) {
 		char *header_end = strstr(buf, "\r\n\r\n");
 		int header_len = header_end == NULL ? i : header_end - buf + 4; // encontra comprimento do cabeçalho da requisição
 
-		p.req_msg = header_end;
+		p.req_msg = header_end == NULL ? header_end : header_end + 4; // mensagem após cabeçalho
 
 		pthread_mutex_lock(&processing_mutex); // região de processamento da mensagem (parser possui vários recursos globais)
 		if (!(yyin = fmemopen(buf, header_len, "r"))) { // yyin contém apenas cabeçalho de requisição
@@ -232,7 +232,7 @@ int main(int argc, char *argv[]) {
 			pthread_mutex_unlock(&curr_mutex);
 			printf("Thread principal: Servidor sobrecarregado!\n");
 
-			trata_erro(503, "close", -1, soquete_msg, registrofd, NULL); // na prática, envia resposta como se fosse a uma requisição get
+			trata_erro(503, "close", -1, soquete_msg, registrofd, NULL, NULL); // na prática, envia resposta como se fosse a uma requisição get
 
 			close(soquete_msg);
 		}

@@ -10,5 +10,5 @@ typedef struct params { // parâmetros de uso situacional a serem passados à ro
     char *auth;
 } params;
 
-void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm);
-int process_request(const params p, int saidafd, int registrofd);
+void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm, const char *errmsg);
+void process_request(const params p, int saidafd, int registrofd);
