@@ -8,6 +8,7 @@
 #include <libgen.h>
 #include <crypt.h>
 #include <ctype.h>
+#include <pthread.h>
 
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -28,13 +29,14 @@
 #define MAXSIZE 16384
 #endif
 
+static const char * m200post = "<!DOCTYPE html><html><head><title>200 OK</title></head><body><h1>200 OK</h1><p>Senha alterada com sucesso.</p></body></html>";
 static const char * e400 = "<!DOCTYPE html><html><head><title>400 Bad Request</title></head><body><h1>400 Bad Request</h1><p>Aqui est&aacute; o conte&uacute;do de 400.html.</p></body></html>";
 static const char * e400novasenha = "<!DOCTYPE html><html><head><title>400 Bad Request</title></head><body><h1>400 Bad Request</h1><p>Os dois campos de nova senha n&atilde;o coincidem.</p></body></html>";
 static const char * e400login = "<!DOCTYPE html><html><head><title>400 Bad Request</title></head><body><h1>400 Bad Request</h1><p>Usu&aacute;rio e/ou senha n&atilde;o conferem.</p></body></html>";
 static const char * e401 = "<!DOCTYPE html><html><head><title>401 Unauthorized</title></head><body><h1>401 Unauthorized</h1><p>Aqui est&aacute; o conte&uacute;do de 401.html.</p></body></html>";
 static const char * e403 = "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>403 Forbidden</h1><p>Aqui est&aacute; o conte&uacute;do de 403.html.</p></body></html>";
 static const char * e404 = "<!DOCTYPE html><html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1><p>Aqui est&aacute; o conte&uacute;do de 404.html.</p></body></html>";
-static const char * e500 = "<!DOCTYPE html><html><head><title>500 Internal Server Error</title></head><body><h1>500 Internal Server Error</h1><p>Erro na leitura do arquivo de senhas.</p></body></html>";
+static const char * e500 = "<!DOCTYPE html><html><head><title>500 Internal Server Error</title></head><body><h1>500 Internal Server Error</h1><p>Erro na leitura ou escrita do arquivo de senhas.</p></body></html>";
 static const char * e503 = "<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head><body><h1>503 Service Unavailable</h1><p>O servidor est&aacute; sobrecarregado. Tente novamente.</p></body></html>";
 
 static unsigned char *base64_decode(const char *input, int length, int *out_len);
@@ -57,7 +59,9 @@ static void trata_options(const char *connection_type, int saidafd, int registro
 static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
 static void interpreta_form(char *req_msg_cpy, char **nomeusuario, char **senhaatual, char **novasenha, char **confirmanovasenha);
 static int altera_senha(const char *htppath, const char *nomeusuario, const char *senhaatual, const char *novasenha);
-static void trata_post(const char *webspace, const char *resource, const char *req_msg, const char *connection_type, int saidafd, int registrofd);
+static int trata_post(const char *webspace, const char *resource, const char *req_msg, char *errmsg);
+
+static pthread_rwlock_t htpasswd_lock = PTHREAD_RWLOCK_INITIALIZER; //GEMINI: lida com concorrência de leitura e escrita em arquivos de senhas
 
 /*Feito com IA*/
 static unsigned char *base64_decode(const char *input, int length, int *out_len) {
@@ -216,6 +220,15 @@ static int build_head(char *buf, int req_code, int status, const struct stat *st
 			modtbuf
 		);
 		
+	} else if (status == 200 && req_code == POST) {
+
+		off = sprintf(
+			buf,
+			"HTTP/1.1 200 OK\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nContent-Length: %ld\r\nContent-Type: text/html\r\n\r\n",
+			datebuf,
+			connection_type,
+			content_length
+		);
 	} else if (status == 401) {
 
 		off = sprintf(
@@ -329,10 +342,8 @@ static void entrega_recurso(char * path, struct stat statinfo, const char *conne
 static int le_htaccess(const char *htapath, char *htppath, int read_realm, char *realm) {
 	/*extrai path de .htpassword e realm de .htaccess*/
 	FILE *fp;
-	if (!(fp = fopen(htapath, "r"))) {
-		fclose(fp);
+	if (!(fp = fopen(htapath, "r")))
 		return 500; // erro em abertura de .htaccess
-	}
 
 	fgets(htppath, MAXSIZE, fp);
 	if (read_realm)
@@ -367,9 +378,12 @@ static int busca_htaccess(const char *webspace, char *search_path) {
 static int busca_credenciais(const char *usuario, const char *senha, const char *htpath) {
 	/*Itera sobre arquivo de senhas buscando informações de login*/
 
+	pthread_rwlock_rdlock(&htpasswd_lock); // nenhuma thread pode escrever em .htpasswd enquanto uma thread está lendo
+
 	FILE *fp;
 	if (!(fp = fopen(htpath, "r"))) { // abre .htpassword
 		perror("(busca_credenciais) Erro em fopen");
+		pthread_rwlock_unlock(&htpasswd_lock);
 		exit(errno);
 	}	
 	
@@ -386,25 +400,27 @@ static int busca_credenciais(const char *usuario, const char *senha, const char 
 		usuario_arquivo = strtok_r(linha, ":\n", &saveptr); // ignora \n pois é passado como separador
 		senha_arquivo = strtok_r(NULL, ":\n", &saveptr);
 
-		char *hash;
-
 		if (strcmp(usuario, usuario_arquivo) == 0) {
 			
-			hash = crypt_r(senha, senha_arquivo, &data); // thread safe
+			char *hash = crypt_r(senha, senha_arquivo, &data); // thread safe
 
 			if (!hash || hash[0] == '*') {  // hash null ou hash de erro (começa em *, conforme manual)
+				fclose(fp);
+				pthread_rwlock_unlock(&htpasswd_lock);
 				perror("Erro em crypt"); // cai aqui caso não seja inserida senha, por exemplo
 				return 0;
 			}
 
 			if (strcmp(hash, senha_arquivo) == 0) {
 				fclose(fp);
+				pthread_rwlock_unlock(&htpasswd_lock);
 				return 1;
 			}
 		}
 	}
 
 	fclose(fp);
+	pthread_rwlock_unlock(&htpasswd_lock);
 	return 0;
 }
 
@@ -661,21 +677,136 @@ static void interpreta_form(char *req_msg_cpy, char **nomeusuario, char **senhaa
 	*novasenha = strtok_r(NULL, "&", &saveptr);
 	strtok_r(NULL, "=", &saveptr);
 	*confirmanovasenha = strtok_r(NULL, "&", &saveptr);
+
+	url_decode(*nomeusuario);
+	url_decode(*senhaatual);
+	url_decode(*novasenha);
+	url_decode(*confirmanovasenha);
+}
+
+static void gerar_salt_thread_safe(char *salt) {
+	/*FEITO COM AJUDA DE IA*/
+	/*Gera salt para ser usado na geração do hash da nova senha*/
+    const char *charset = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    
+    // Cria uma semente única por thread/chamada misturando segundos e microssegundos
+    // O XOR (^) ajuda a diferenciar chamadas muito próximas
+    unsigned int seed = (unsigned int)(tv.tv_sec ^ tv.tv_usec);
+
+    strcpy(salt, "$6$");
+    int offset = 3;
+
+    for (int i = 0; i < 16; i++) {
+        // rand_r usa a semente local passada por referência
+        int index = rand_r(&seed) % 64; 
+        salt[offset + i] = charset[index];
+    }
+    
+    salt[offset + 16] = '\0';
 }
 
 static int altera_senha(const char *htppath, const char *nomeusuario, const char *senhaatual, const char *novasenha) {
 	/*Tenta modificar senha em .htpassword com base em formulario*/
-	FILE *fp;
+
+	pthread_rwlock_wrlock(&htpasswd_lock); // nenhuma thread pode ler ou escrever em .htpasswd enquanto esta thread tenta alterar senha
+	// (talvez seja possível melhorar o uso dessa trava (upgrade: read -> write?))
+
+	FILE *fp, *fp_temp;
+	char temp_path[MAXSIZE]; // GEMINI: escrever em segundo arquivo e então substituir original para evitar corrupção se servidor interrompido
+    sprintf(temp_path, "%s.tmp", htppath);
+
 	if (!(fp = fopen(htppath, "r"))) { // abre .htpassword
-		fclose(fp);
+		pthread_rwlock_unlock(&htpasswd_lock);
 		return 500; // erro em abertura de .htpassword
 	}
 
+	if (!(fp_temp = fopen(temp_path, "w"))) {
+		fclose(fp);
+		pthread_rwlock_unlock(&htpasswd_lock);
+		return 500; // erro em abertura/criação de .htpasswd.tmp
+	}
+
+	char linha[512];
+	char linha_copia[512]; // para contornar strtok_r modificando string
+
+	char *saveptr; // para strtok
+	char *usuario_arquivo;
+	char *senha_arquivo;
+
+	struct crypt_data data; // para crypt
+
+	int senha_alterada = 0;
+
+	while (fgets(linha, sizeof(linha), fp)) {
+		strcpy(linha_copia, linha);
+
+		usuario_arquivo = strtok_r(linha_copia, ":\n", &saveptr); // ignora \n pois é passado como separador
+		senha_arquivo = strtok_r(NULL, ":\n", &saveptr);
+
+		if (strcmp(nomeusuario, usuario_arquivo) == 0) {
+
+			data.initialized = 0;	
+			char *hash_teste = crypt_r(senhaatual, senha_arquivo, &data); // thread safe
+
+			if (!hash_teste || hash_teste[0] == '*') {  // hash null ou hash de erro (começa em *, conforme manual)
+				fclose(fp);
+				fclose(fp_temp);
+				pthread_rwlock_unlock(&htpasswd_lock);
+				unlink(temp_path);
+				perror("(altera_senha: senhaatual) Erro em crypt"); // cai aqui caso não seja inserida senha, por exemplo
+				return 400; // erro em senhaatual, não será possível encontrar informações de login compatíveis
+			}
+
+			if (strcmp(hash_teste, senha_arquivo) == 0) {
+				char salt[24];
+				gerar_salt_thread_safe(salt);
+
+				data.initialized = 0;
+				char *novo_hash = crypt_r(novasenha, salt, &data);
+
+				if (!novo_hash || novo_hash[0] == '*') { // hash null ou hash de erro
+					fclose(fp);
+					fclose(fp_temp);
+					pthread_rwlock_unlock(&htpasswd_lock);
+					unlink(temp_path);
+					perror("(altera_senha: novasenha) Erro em crypt"); // cai aqui caso não seja inserida senha, por exemplo
+					return 400; // erro em novasenha
+				}
+
+				fprintf(fp_temp, "%s:%s\n", nomeusuario, novo_hash); // escreve nova linha em arquivo temporário
+				senha_alterada = 1;
+			} else { // usuário encontrado, porém senha não bateu (pode haver outra entrada)
+				fputs(linha, fp_temp);
+			}
+		} else { // linha não corresponde ao usuário: apenas copia
+			fputs(linha, fp_temp);
+		}
+	}
+
+	fclose(fp);
+	fclose(fp_temp);
+
+	int ret_value;
+
+	if (senha_alterada) {
+		if (rename(temp_path, htppath) != 0) {
+            perror("(altera_senha) Erro ao renomear arquivo de senhas");
+			ret_value = 500; // erro em "escrita" de .htpasswd
+        } else
+			ret_value = 200; // .htpasswd sobrescrito
+	} else {
+		ret_value = 400; // usuário não encontrado ou senha incorreta
+	}
+	
+	unlink(temp_path);
+	pthread_rwlock_unlock(&htpasswd_lock);
+	return ret_value;
 }
 
-static void trata_post(const char *webspace, const char *resource, const char *req_msg, const char *connection_type, int saidafd, int registrofd) {
-	char errmsg[512]; // guarda página html de erro
-
+static int trata_post(const char *webspace, const char *resource, const char *req_msg, char *errmsg) {
 	char *nomeusuario, *senhaatual, *novasenha, *confirmanovasenha;
 	char *req_msg_cpy = strdup(req_msg); // cópia para strtok_r não modificar req_msg
 
@@ -686,8 +817,7 @@ static void trata_post(const char *webspace, const char *resource, const char *r
 	if (strcmp(novasenha, confirmanovasenha)) { // senhas novas não batem
 		strcpy(errmsg, e400novasenha);
 		free(req_msg_cpy);
-		trata_erro(400, connection_type, POST, saidafd, registrofd, NULL, errmsg);
-		return;
+		return 400;
 	}
 
 	char *aux_path = concatena(webspace, resource);
@@ -703,13 +833,31 @@ static void trata_post(const char *webspace, const char *resource, const char *r
 	if (status) {
 		/*erro em abertura de .htaccess*/
 		free(req_msg_cpy);
-		trata_erro(500, connection_type, POST, saidafd, registrofd, NULL, NULL);
-		return;
+		return 500;
 	}
+
+	int len = strlen(htppath);
+	if (len)
+		htppath[len-1] = '\0'; // remove \n do final do path
 
 	status = altera_senha(htppath, nomeusuario, senhaatual, novasenha);
 
+	switch(status) {
+		case 200: // gambiarra: usa trata_erro para tratar sucesso
+			strcpy(errmsg, m200post);
+			break;
+		case 400:
+			strcpy(errmsg, e400login);
+			break;
+		case 500:
+			break;
+		default:
+			perror("(trata_post) Erro em altera senha");
+			exit(4);
+	}
+
 	free(req_msg_cpy);
+	return status;
 }
 
 void trata_erro(int status, const char *connection_type, int req_code, int saidafd, int registrofd, const char *realm, const char *errmsg) {
@@ -720,7 +868,7 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 	size_t size;
 	const char *msg;
 
-	if (!errmsg) { // caso string de msg de erro não seja passada, usar padrão com base em status code.
+	if (!errmsg[0] || !errmsg) { // caso string de msg de erro não seja passada, usar padrão com base em status code.
 		switch (status) {
 			case 400:
 				size = strlen(e400);
@@ -779,6 +927,8 @@ void process_request(const params p, int saidafd, int registrofd) {
 	int result = 0; // guarda status code retornado por trata_gethead()
 	int req_code = -1; // identifica tipo de requisição (começa inválido). Utilizado para não trabalhar com strings dentro de trata_gethead e erro
 	char realm[256];
+	char errmsg[1024];
+	errmsg[0] = '\0'; // serve como NULL em trata_erro
 
 	if (strcmp(p.req_type, "GET") == 0) {
 		req_code = GET;
@@ -798,12 +948,12 @@ void process_request(const params p, int saidafd, int registrofd) {
 	}
 	else if (strcmp(p.req_type, "POST") == 0) {
 		req_code = POST;
-		trata_post(p.webspace, p.resource, p.req_msg, p.connection_type, saidafd, registrofd);
+		result = trata_post(p.webspace, p.resource, p.req_msg, errmsg);
 	} else {
 		trata_erro(400, p.connection_type, req_code, saidafd, registrofd, NULL, NULL); // servidor apenas reconhece 5 tipos acima. Devolve 400 caso requisição seja diferente
 	}
 
 	if (result != 0) { // imprime mensagem de erro caso houve algum em requisição GET ou HEAD (apenas cabeçalho)
-		trata_erro(result, p.connection_type, req_code, saidafd, registrofd, realm, NULL);
+		trata_erro(result, p.connection_type, req_code, saidafd, registrofd, realm, errmsg);
 	}
 }
