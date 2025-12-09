@@ -1,6 +1,7 @@
 cd meu-webspace/dir1/dir11/dir111
 chmod 600 .htaccess
 chmod 400 welcome.html
+chmod 600 formulario.html
 cd ..
 chmod 600 .htaccess
 chmod 700 dir111
@@ -8,7 +9,7 @@ chmod 400 texto11.html
 cd ..
 chmod 600 .htaccess
 chmod 700 dir11
-chmod 600 ex_8.html
+chmod 600 formulario.html
 chmod 400 texto1.html
 chmod 000 texto2.html
 cd ..

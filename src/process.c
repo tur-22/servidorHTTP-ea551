@@ -57,7 +57,10 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 static int trata_gethead(const char *webspace, const char *resource, const char *connection_type, char *auth, int req_code, int saidafd, int registrofd, char *realm);
 static void trata_options(const char *connection_type, int saidafd, int registrofd);
 static void trata_trace(const char *request, const char *connection_type, int saidafd, int registrofd);
+static int hex_to_int(char c);
+static void url_decode(char *str);
 static void interpreta_form(char *req_msg_cpy, char **nomeusuario, char **senhaatual, char **novasenha, char **confirmanovasenha);
+static void gerar_salt_thread_safe(char *salt);
 static int altera_senha(const char *htppath, const char *nomeusuario, const char *senhaatual, const char *novasenha);
 static int trata_post(const char *webspace, const char *resource, const char *req_msg, char *errmsg);
 
@@ -349,6 +352,16 @@ static int le_htaccess(const char *htapath, char *htppath, int read_realm, char 
 	if (read_realm)
 		fgets(realm, 256, fp);
 	fclose(fp);
+
+	int len = strlen(htppath);
+	if (len)
+		htppath[len-1] = '\0'; // remove \n do final do path
+
+	if (read_realm) {
+		len = strlen(realm);
+		if (len)
+			realm[len-1] = '\0'; // remove \n do final de realm
+	}
 	return 0;
 }
 
@@ -468,10 +481,6 @@ static int autentica(const char *webspace, char *full_path, char *auth, char *re
 			perror("(autentica) Erro em fopen"); 
 			exit(errno);
 		}
-
-		len = strlen(htppath);
-		if (len)
-			htppath[len-1] = '\0'; // remove \n do final do path
 
 		if (auth == NULL || strncmp(auth, "Basic", 5)) {
 			printf("Campo de autorização válido requerido.\n\n");
@@ -835,11 +844,7 @@ static int trata_post(const char *webspace, const char *resource, const char *re
 		free(req_msg_cpy);
 		return 500;
 	}
-
-	int len = strlen(htppath);
-	if (len)
-		htppath[len-1] = '\0'; // remove \n do final do path
-
+	
 	status = altera_senha(htppath, nomeusuario, senhaatual, novasenha);
 
 	switch(status) {

@@ -39,19 +39,19 @@ void handle_sigchld() {
 
 int main(int argc, char *argv[]) {
 
-	if (argc != 4) { // verifica número de argumentos
-		printf("Utilização: %s <N> <path absoluto webspace> <path registro>\n", argv[0]);
+	if (argc != 5) { // verifica número de argumentos
+		printf("Utilização: %s <porta> <N> <path absoluto webspace> <path registro>\n", argv[0]);
 		return 1;
 	}
 
 	params p;
-	p.webspace = argv[2];
+	p.webspace = argv[3];
 
-	long int N = strtol(argv[1], NULL, 10);
+	long int N = strtol(argv[2], NULL, 10);
 	printf("Programa iniciado com N = %ld\n\n", N);
 
     int registrofd; // file descriptor para registro.txt
-	if ((registrofd = open(argv[3], O_WRONLY | O_CREAT | O_APPEND, 0600)) == -1) { // file descriptor para registro.txt
+	if ((registrofd = open(argv[4], O_WRONLY | O_CREAT | O_APPEND, 0600)) == -1) { // file descriptor para registro.txt
 		perror("Erro em open (main: registro_fd)");
 		exit(errno);
 	}
@@ -70,8 +70,9 @@ int main(int argc, char *argv[]) {
 		exit(errno);
 	}
 
+	uint16_t port = (uint16_t) strtol(argv[1], NULL, 10);
 	meu_servidor.sin_family = AF_INET;
-	meu_servidor.sin_port = htons(3333); // htons() converte para representação de rede
+	meu_servidor.sin_port = htons(port); // htons() converte para representação de rede
 	meu_servidor.sin_addr.s_addr = INADDR_ANY; // qualquer endereço válido
 
 	bind(soquete, (struct sockaddr*)&meu_servidor, sizeof(meu_servidor));

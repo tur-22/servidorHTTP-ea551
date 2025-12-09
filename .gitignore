@@ -1,3 +1,5 @@
 registro.txt
 gera_hash/
 .vscode/
+build_feec.sh
+setup_webspace.sh

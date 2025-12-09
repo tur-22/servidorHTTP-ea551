@@ -23,13 +23,13 @@
 
 int main(int argc, char *argv[]) {
 
-	if (argc != 3) { // verifica número de argumentos
-		printf("Utilização: %s <path absoluto webspace> registro.txt\n", argv[0]);
+	if (argc != 4) { // verifica número de argumentos
+		printf("Utilização: %s <porta> <path absoluto webspace> registro.txt\n", argv[0]);
 		return 1;
 	}
 
 	params p;
-	p.webspace = argv[1];
+	p.webspace = argv[2];
 
 	int soquete, soquete_msg;
 	struct sockaddr_in meu_servidor, meu_cliente;
@@ -46,15 +46,16 @@ int main(int argc, char *argv[]) {
 	}
 	/* */
 
+	uint16_t port = (uint16_t) strtol(argv[1], NULL, 10);
 	meu_servidor.sin_family = AF_INET;
-	meu_servidor.sin_port = htons(3333); // htons() converte para representação de rede
+	meu_servidor.sin_port = htons(port); // htons() converte para representação de rede
 	meu_servidor.sin_addr.s_addr = INADDR_ANY; // qualquer endereço válido
 
 	bind(soquete, (struct sockaddr*)&meu_servidor, sizeof(meu_servidor));
 	listen(soquete, 5); // prepara socket e uma lista para receber até 5 conexões
 
 	int registrofd; // file descriptor para registro.txt
-	if ((registrofd = open(argv[2], O_WRONLY | O_CREAT | O_APPEND, 0600)) == -1) {
+	if ((registrofd = open(argv[3], O_WRONLY | O_CREAT | O_APPEND, 0600)) == -1) {
 		perror("Erro em open (main: registro_fd)");
 		exit(errno);
 	}
