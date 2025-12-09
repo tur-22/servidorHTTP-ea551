@@ -39,12 +39,25 @@ static const char * e404 = "<!DOCTYPE html><html><head><title>404 Not Found</tit
 static const char * e500 = "<!DOCTYPE html><html><head><title>500 Internal Server Error</title></head><body><h1>500 Internal Server Error</h1><p>Erro na leitura ou escrita do arquivo de senhas.</p></body></html>";
 static const char * e503 = "<!DOCTYPE html><html><head><title>503 Service Unavailable</title></head><body><h1>503 Service Unavailable</h1><p>O servidor est&aacute; sobrecarregado. Tente novamente.</p></body></html>";
 
+static const char * tabela_extensoes[] = {".html", ".txt", ".pdf", ".gif", ".tif", ".png", ".jpg"};
+
+enum tipos {
+	HTML,
+	TXT,
+	PDF,
+	GIF,
+	TIF,
+	PNG,
+	JPG,
+	OUTRO
+};
+
 static unsigned char *base64_decode(const char *input, int length, int *out_len);
 static char * concatena(const char *str1, const char *str2);
 static char * simplifica_path(char * path);
 static void get_date(char *buf, int bufsize);
 static void registra_head(char *buf, int registrofd);
-static int build_head(char *buf, int req_code, int status, const struct stat *statinfo, size_t content_length, const char *connection_type, const char *realm);
+static int build_head(char *buf, int req_code, int status, const struct stat *statinfo, size_t content_length, const char *connection_type, const char *content_type, const char *realm);
 static void entrega_recurso_head(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso_get(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd);
 static void entrega_recurso(char * path, struct stat statinfo, const char *connection_type, int req_code, int saidafd, int registrofd);
@@ -190,12 +203,11 @@ static void registra_head(char *buf, int registrofd) {
 	}
 }
 
-static int build_head(char *buf, int req_code, int status, const struct stat *statinfo, size_t content_length, const char *connection_type, const char *realm) {
+static int build_head(char *buf, int req_code, int status, const struct stat *statinfo, size_t content_length, const char *connection_type, const char *content_type, const char *realm) {
 	/*Constrói cabeçalho de resposta apropriado para a requisição e o salva em buf*/
 
 	char datebuf[64]; // guarda data atual formatada (sem \r\n)
 	char statusmsg[32]; // guarda mensagem referente ao status code, a ser exibida na primeira linha da resposta
-	char content_type[32];
 	int off; // número de caracteres escritos em buf para armazenar header
 
 	get_date(datebuf, sizeof(datebuf));
@@ -216,10 +228,11 @@ static int build_head(char *buf, int req_code, int status, const struct stat *st
 		strftime(modtbuf, sizeof(modtbuf), "%c BRT", localtime(&(statinfo->st_mtim.tv_sec))); // localtime retorna struct com tempo de última modificação formatado
 		off = sprintf(
 			buf,
-			"HTTP/1.1 200 OK\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nContent-Length: %ld\r\nContent-Type: text/html\r\nLast-Modified: %s\r\n\r\n",
+			"HTTP/1.1 200 OK\r\nDate: %s\r\nServer: Servidor HTTP ver. 0.1 de Artur Paulos Pinheiro\r\nConnection: %s\r\nContent-Length: %ld\r\nContent-Type: %s\r\nX-Content-Type-Options: nosniff\r\nLast-Modified: %s\r\n\r\n",
 			datebuf,
 			connection_type,
 			statinfo->st_size,
+			content_type,
 			modtbuf
 		);
 		
@@ -245,26 +258,28 @@ static int build_head(char *buf, int req_code, int status, const struct stat *st
 
 	} else { // demais erros ou trace
 
+		char default_content_type[32];
+
 		switch(status) {
 			case 200: // TRACE
 				sprintf(statusmsg, "200 OK");
-				sprintf(content_type, "message/http");
+				sprintf(default_content_type, "message/http");
 				break;
 			case 400:
 				sprintf(statusmsg, "400 Bad Request");
-				sprintf(content_type, "text/html");
+				sprintf(default_content_type, "text/html");
 				break;
 			case 403:
 				sprintf(statusmsg, "403 Forbidden");
-				sprintf(content_type, "text/html");
+				sprintf(default_content_type, "text/html");
 				break;
 			case 404:
 				sprintf(statusmsg, "404 Not Found");
-				sprintf(content_type, "text/html");
+				sprintf(default_content_type, "text/html");
 				break;
 			case 503:
 				sprintf(statusmsg, "503 Service Unavailable");
-				sprintf(content_type, "text/html");
+				sprintf(default_content_type, "text/html");
 				break;
 			default:
 				sprintf(statusmsg, "000"); // caso não tratado
@@ -276,7 +291,7 @@ static int build_head(char *buf, int req_code, int status, const struct stat *st
 			datebuf,
 			connection_type,
 			content_length,
-			content_type
+			default_content_type
 		);
 	}	
 
@@ -285,11 +300,58 @@ static int build_head(char *buf, int req_code, int status, const struct stat *st
 	/*operações de formatação de data feitas com ajuda do chatgpt*/
 }
 
+static void get_content_type(char *dest, const char *resource) {
+	/*obtém formato de arquivo a partir de resource e escreve template correspondente em dest*/
+
+	char * extensao = strrchr(resource, '.');
+	enum tipos tipo;
+
+	if (extensao) { // se arquivo possui extensão no nome
+		int i;
+		for (i = 0; i < sizeof(tabela_extensoes)/sizeof(tabela_extensoes[0]); i++) { // busca na tabela a partir do índice qual seu tipo (representado por enum)
+			if (!strcmp(extensao, tabela_extensoes[i]))
+				break;
+		}
+		tipo = i;
+	} else {
+		tipo = OUTRO;
+	}
+
+	switch (tipo) {
+		case HTML:
+			strcpy(dest, "text/html");
+			break;
+		case TXT:
+			strcpy(dest, "text/plain");
+			break;
+		case PDF:
+			strcpy(dest, "application/pdf");
+			break;
+		case GIF:
+			strcpy(dest, "image/gif");
+			break;
+		case TIF:
+			strcpy(dest, "image/tiff");
+			break;
+		case PNG:
+			strcpy(dest, "image/png");
+			break;
+		case JPG:
+			strcpy(dest, "image/jpeg");
+			break;
+		default:
+			strcpy(dest, "application/octet-stream");
+	}
+}
+
 static void entrega_recurso_head(char * path, struct stat statinfo, const char *connection_type, int saidafd, int registrofd) {
 	/* constrói buffer com cabeçalho e o escreve na saída */
 
 	char buf[MAXSIZE];
-	int i = build_head(buf, HEAD, 200, &statinfo, 0, connection_type, NULL);
+	char content_type[128];
+
+	get_content_type(content_type, path); // path é passado em lugar de recurso pois final das duas strings é o mesmo
+	int i = build_head(buf, HEAD, 200, &statinfo, 0, connection_type, content_type, NULL);
 
 	if (write(saidafd, buf, i) == -1) {
 		perror("(entrega_recurso_head) Erro em write");
@@ -303,25 +365,36 @@ static void entrega_recurso_get(char * path, struct stat statinfo, const char *c
 	/* constrói buffer com cabeçalho e recurso e o escreve na saída */
 	
 	int fd, i;
-	int off; // offset a partir do qual read deve escrever em buf, devido ao cabeçalho
+	int header_len; // offset a partir do qual read deve escrever em buf, devido ao cabeçalho
 	char buf[MAXSIZE];
+	char content_type[128];
 
-	off = build_head(buf, GET, 200, &statinfo, 0, connection_type, NULL);
+	get_content_type(content_type, path);
+	header_len = build_head(buf, GET, 200, &statinfo, 0, connection_type, content_type, NULL);
 
 	registra_head(buf, registrofd); // registra saída em registro.txt antes de ler recurso
+
+	if (write(saidafd, buf, header_len) == -1) {
+		perror("(entrega_recurso_get) Erro em write");
+		exit(errno);
+	}
 
 	if ((fd = open(path, O_RDONLY)) == -1) {
 		perror("(entrega_recurso_get) Erro em open (entrega_recurso_get)");
 		exit(errno);
 	}
-	if ((i = read(fd, buf + off, sizeof(buf) - off)) == -1) {
-		perror("(entrega_recurso_get) Erro em read");
-		exit(errno);
-	}
-	if (write(saidafd, buf, i + off) == -1) {
-		perror("(entrega_recurso_get) Erro em write");
-		exit(errno);
-	}
+
+	do {
+		if ((i = read(fd, buf, sizeof(buf))) == -1) {
+			perror("(entrega_recurso_get) Erro em read");
+			exit(errno);
+		}
+		if (write(saidafd, buf, i) == -1) {
+			perror("(entrega_recurso_get) Erro em write");
+			exit(errno);
+		}
+	} while (i == sizeof(buf));
+
 	close(fd);
 }
 
@@ -571,11 +644,28 @@ static int trata_gethead(const char *webspace, const char *resource, const char 
 			// REFACTOR: trocar ifs abaixo por função
 
 			if (fstatat(dirfd, "index.html", &file_statinfo, 0) == 0) { // se existe index.html
-				close(dirfd);
-				if (!(file_statinfo.st_mode & S_IRUSR)) { // se index.html não tem permissão de leitura: forbidden
+				if (!(file_statinfo.st_mode & S_IRUSR)) { // se index.html sem permissão de leitura
+
+					/*SOLUÇÃO DE ÚLTIMA HORA (apenas dupliquei código abaixo): antes se index.html sem permissão: forbidden*/
+					if (fstatat(dirfd, "welcome.html", &file_statinfo, 0) == 0) { // se existe welcome.html
+						close(dirfd);
+						if (!(file_statinfo.st_mode & S_IRUSR)) { // se welcome.html não tem permissão de leitura: forbidden
+							free(full_path);
+							return 403;
+						}
+						// caso contrário: open, read, write
+						char *fuller_path = concatena(full_path, "/welcome.html");
+						free(full_path);
+						entrega_recurso(fuller_path, file_statinfo, connection_type, req_code, saidafd, registrofd);
+						free(fuller_path);
+						return 0;
+					}
+
+					close(dirfd);
 					free(full_path);
 					return 403;
 				}
+				close(dirfd);
 				// caso contrário: open, read, write
 				char *fuller_path = concatena(full_path, "/index.html"); // concatena /index.html ao final da string
 				free(full_path);
@@ -610,7 +700,7 @@ static void trata_options(const char *connection_type, int saidafd, int registro
 	char buf[MAXSIZE];
 	char datebuf[64]; // guarda data atual formatada (sem \r\n)
 
-	build_head(buf, OPTIONS, 204, NULL, 0, connection_type, NULL);
+	build_head(buf, OPTIONS, 204, NULL, 0, connection_type, NULL, NULL);
 
 	if (write(saidafd, buf, strlen(buf)) == -1) {
 		perror("(trata_options) Erro em write");
@@ -625,7 +715,7 @@ static void trata_trace(const char *request, const char *connection_type, int sa
 
 	char buf[MAXSIZE];
 
-	build_head(buf, TRACE, 200, NULL, strlen(request), connection_type, NULL); // preenche buf com cabeçalho
+	build_head(buf, TRACE, 200, NULL, strlen(request), connection_type, NULL, NULL); // preenche buf com cabeçalho
 
 	registra_head(buf, registrofd); // registra cabeçalho em registro.txt antes de requisição ser concatenada a buf
 
@@ -908,7 +998,7 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 		msg = errmsg;
 	}
 
-	int off = build_head(buf, req_code, status, NULL, size, connection_type, realm);
+	int off = build_head(buf, req_code, status, NULL, size, connection_type, NULL, realm);
 
 	registra_head(buf, registrofd); // registra saída em registro.txt antes de ler html de erro
 
