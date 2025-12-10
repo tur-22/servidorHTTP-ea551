@@ -3,4 +3,3 @@ gera_hash/
 .vscode/
 build_feec.sh
 setup_webspace.sh
-webspace_para_testes/

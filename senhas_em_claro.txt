@@ -1,0 +1,14 @@
+realm1
+joao:1234
+usuario1:senha1
+usuario2:senha2
+
+realm2
+maria:4321
+usuario3:senha3
+usuario4:senha4
+
+realm3
+jose:54321
+ana:abc123
+usuario5:senha5

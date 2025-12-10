@@ -1,0 +1,1 @@
+Este é o arquivo teste.txt que deveria estar sem permissão de leitura e, portanto, inacessível.

@@ -1,0 +1,2 @@
+Este é o arquivo texto1.txt.
+
