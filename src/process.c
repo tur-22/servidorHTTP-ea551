@@ -965,7 +965,7 @@ void trata_erro(int status, const char *connection_type, int req_code, int saida
 	size_t size;
 	const char *msg;
 
-	if (!errmsg[0] || !errmsg) { // caso string de msg de erro não seja passada, usar padrão com base em status code.
+	if (!errmsg || !errmsg[0]) { // caso string de msg de erro não seja passada, usar padrão com base em status code.
 		switch (status) {
 			case 400:
 				size = strlen(e400);
