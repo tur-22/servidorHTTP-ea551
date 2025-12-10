@@ -428,12 +428,14 @@ static int le_htaccess(const char *htapath, char *htppath, int read_realm, char 
 
 	int len = strlen(htppath);
 	if (len)
-		htppath[len-1] = '\0'; // remove \n do final do path
+		if (htppath[len-1] == '\n')
+			htppath[len-1] = '\0'; // remove \n do final do path
 
 	if (read_realm) {
 		len = strlen(realm);
 		if (len)
-			realm[len-1] = '\0'; // remove \n do final de realm
+			if (realm[len-1] == '\n')
+				realm[len-1] = '\0'; // remove \n do final de realm
 	}
 	return 0;
 }
